@@ -89,20 +89,23 @@ interactive_run() { [ "$NON_INTERACTIVE" -eq 0 ] && { stdin_is_input || { exec 9
 
 # read_line <var> <prompt>            普通行输入
 # read_line <var> <prompt> 1          密钥输入：实时掩码（前3+星+后3），支持退格/Ctrl-U
+# READ_EOF=1 表示上次 read_line 遇到 stdin EOF（输入耗尽）
+READ_EOF=0
 read_line() {
   local __var="$1" __prompt="$2" __secret="${3:-0}"
+  READ_EOF=0
   if [ "$__secret" = "1" ]; then read_secret "$__var" "$__prompt"; return; fi
   local __ans=""
   if stdin_is_input; then
     printf '%s' "$__prompt" >&2
-    IFS= read -r __ans || true
+    IFS= read -r __ans || READ_EOF=1
   elif { exec 9<>/dev/tty; } 2>/dev/null; then
     printf '%s' "$__prompt" > /dev/tty
-    IFS= read -r __ans < /dev/tty || true
+    IFS= read -r __ans < /dev/tty || READ_EOF=1
     exec 9>&- 9<&-
   else
     printf '%s' "$__prompt" >&2
-    IFS= read -r __ans || true
+    IFS= read -r __ans || READ_EOF=1
   fi
   printf -v "$__var" '%s' "$__ans"
 }
@@ -972,20 +975,33 @@ collect_credentials() {
       local need_any=0 a2
       for a2 in $(printf '%s' "$SELECTED" | tr ',' ' '); do agent_needs_models "$a2" && need_any=1; done
       if [ "$need_any" -eq 1 ]; then
+        local _eg=0
         while [ -z "$MODELS" ]; do
           read_line MODELS "$(lc 'model ids (comma separated, required)' '模型 id（逗号分隔，必填）') "
+          [ "$READ_EOF" = "1" ] && _eg=$((_eg + 1)) || _eg=0
+          [ "$_eg" -ge 2 ] && die "$(lc 'stdin exhausted; rerun with --models a,b' '输入已耗尽；请加 --models a,b 重跑')"
           [ -z "$MODELS" ] && warn "$(lc 'at least one model is required' '至少需要一个模型')"
         done
       fi
     fi
   fi
-  # 单默认模型（claude/codex/grok/opencode）：拉到列表时默认第一个
+  # 单默认模型（claude/codex/grok/opencode）：必填。
+  # 留空会让 claude 用官方默认模型名（如 claude-opus-5-5），网关不认识就报错。
   if [ "$need_model" -eq 1 ] && [ -z "$MODEL" ]; then
-    if [ -n "$MODELS" ]; then MODEL="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
+    if [ -n "$MODELS" ]; then
+      MODEL="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
+      info "$(lc "default model: $MODEL (first of the list; rerun with --model to change)" "默认模型：$MODEL（列表第一个；要换请用 --model 重跑）")"
     elif [ "$NON_INTERACTIVE" -eq 0 ]; then
-      read_line MODEL "$(lc 'default model id (for claude/codex/grok/opencode)' '默认模型 id（claude/codex/grok/opencode 用）') "
+      local _eofguard=0
+      while [ -z "$MODEL" ]; do
+        read_line MODEL "$(lc 'default model id (REQUIRED, must exist on the gateway, e.g. group/auto-claude-sonnet-5-5)' '默认模型 id（必填，须为网关上真实存在的，如 group/auto-claude-sonnet-5-5）') "
+        [ "$READ_EOF" = "1" ] && _eofguard=$((_eofguard + 1)) || _eofguard=0
+        [ "$_eofguard" -ge 2 ] && die "$(lc 'stdin exhausted before a default model was given; rerun with --model <id>' '输入已耗尽仍未提供默认模型；请加 --model <id> 重跑')"
+        [ -z "$MODEL" ] && warn "$(lc 'a default model is required; leaving it empty breaks claude/codex on custom gateways' '默认模型必填；留空会让 claude 用官方模型名，自定义网关会报错')"
+      done
     fi
   fi
+  return 0   # 防 set -e：上方条件表达式为假时函数会以返回码 1 结束，被 set -e 杀掉
 }
 
 # ============================================================
