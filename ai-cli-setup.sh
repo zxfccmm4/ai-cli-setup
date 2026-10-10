@@ -284,8 +284,57 @@ install_grok() {
   export PATH="$HOME/.grok/bin:$PATH"
   have grok || die "$(lc 'grok install failed' 'grok 安装失败')"
 }
+# musl 系统（OpenWrt/iStoreOS/Alpine 等）检测。
+# 官方安装器靠 "ldd --version | grep musl" 判 musl，但 OpenWrt 的 busybox
+# ldd 不输出 musl 字样 -> 误装 glibc 版 -> musl 无 glibc 加载器，exec 失败，
+# shell 报 "not found"。此处用更可靠的探测。
+is_musl_system() {
+  [ -f /lib/ld-musl-x86_64.so.1 ] || [ -f /lib/ld-musl-aarch64.so.1 ] && return 0
+  [ -f /etc/alpine-release ] && return 0
+  [ -f /etc/openwrt_release ] && return 0
+  ldd --version 2>&1 | grep -qi musl && return 0
+  grep -qi musl /etc/os-release 2>/dev/null && return 0
+  return 1
+}
+
+# 直接安装官方 musl 变体到 ~/.opencode/bin
+install_opencode_musl() {
+  local arch="x64"
+  case "$(uname -m)" in
+    aarch64|arm64) arch="arm64" ;;
+  esac
+  local url="https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}-musl.tar.gz"
+  local bindir="$HOME/.opencode/bin" tmpd
+  mkdir -p "$bindir"
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/aicli-oc.XXXXXX")" || return 1
+  info "$(lc "downloading opencode musl build (${arch})" "下载 opencode musl 构建（${arch}）")"
+  if have curl; then
+    curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmpd/oc.tar.gz" "$url" || { rm -rf "$tmpd"; return 1; }
+  else
+    wget -q --timeout=300 -O "$tmpd/oc.tar.gz" "$url" || { rm -rf "$tmpd"; return 1; }
+  fi
+  tar -xzf "$tmpd/oc.tar.gz" -C "$bindir" || { rm -rf "$tmpd"; return 1; }
+  rm -rf "$tmpd"
+  chmod +x "$bindir/opencode" 2>/dev/null || true
+  # 必须真实可执行才算成功
+  "$bindir/opencode" --version >/dev/null 2>&1 || {
+    err "$(lc 'musl build still fails to run on this system' 'musl 构建在本系统仍无法运行')"
+    return 1
+  }
+  ok "opencode (musl) -> $bindir/opencode"
+  return 0
+}
+
 install_opencode() {
-  if have opencode; then info "$(lc 'opencode already installed' 'opencode 已安装')"; return 0; fi
+  # 已装且能真正执行才算已安装（musl 系统上装坏的 glibc 二进制 command -v 命中但无法 exec）
+  if command -v opencode >/dev/null 2>&1 && opencode --version >/dev/null 2>&1; then
+    info "$(lc 'opencode already installed' 'opencode 已安装')"; return 0
+  fi
+  # musl 系统：绕过官方安装器的误检测，直接装 musl 变体
+  if [ "$OS" = "linux" ] && is_musl_system; then
+    install_opencode_musl && return 0
+    warn "$(lc 'musl install failed; trying the official installer' 'musl 安装失败；尝试官方安装器')"
+  fi
   if run_official https://opencode.ai/install; then
     hash -r 2>/dev/null || true
     have opencode && return 0
