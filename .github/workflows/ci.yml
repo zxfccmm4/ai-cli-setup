@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: syntax + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          bash --version | head -1
+          shellcheck --version | head -3
+
+      - name: Bash syntax check (all scripts)
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            printf 'checking %s ... ' "$f"
+            if bash -n "$f"; then echo ok; else echo FAIL; fail=1; fi
+          done < <(git ls-files '*.sh' | grep -v '^upstream/')
+          exit $fail
+
+      - name: Syntax check upstream snapshots (informational)
+        continue-on-error: true
+        run: |
+          while IFS= read -r f; do
+            bash -n "$f" && echo "ok  $f" || echo "skip $f"
+          done < <(git ls-files 'upstream/*.sh')
+
+      - name: ShellCheck (our script only)
+        run: shellcheck -S warning ai-cli-setup.sh
+
+      - name: ShellCheck (upstream snapshots, informational)
+        continue-on-error: true
+        run: |
+          find upstream -name '*.sh' -print0 | xargs -0 -r shellcheck -S error
+
+  smoke:
+    name: smoke test (no network installs)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Version / help
+        run: |
+          ./ai-cli-setup.sh --version
+          ./ai-cli-setup.sh --help >/dev/null
+          ./ai-cli-setup.sh help >/dev/null
+
+      - name: list + doctor
+        run: |
+          ./ai-cli-setup.sh list
+          ./ai-cli-setup.sh doctor
+
+      - name: Local snapshot resolution (offline, no cache needed)
+        run: |
+          ./ai-cli-setup.sh download --only pi,omo,codex,grok
+          ./ai-cli-setup.sh list
+
+      - name: dry-run opencode config write (isolated HOME)
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome"
+          mkdir -p "$HOME"
+          ./ai-cli-setup.sh opencode -y --skip-install \
+            --base-url https://gw.example.com/v1 \
+            --api-key sk-test-123456 \
+            --models gpt-5,gpt-5-mini
+          test -f "$HOME/.config/opencode/opencode.json"
+          node -e '
+            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
+            if (c["$schema"] !== "https://opencode.ai/config.json") throw new Error("$schema missing");
+            const p = c.provider["gw-example-com"];
+            if (!p) throw new Error("provider gw-example-com missing: " + Object.keys(c.provider));
+            if (p.options.baseURL !== "https://gw.example.com/v1") throw new Error("baseURL wrong");
+            if (p.options.apiKey !== "sk-test-123456") throw new Error("apiKey wrong");
+            if (!p.models["gpt-5"] || !p.models["gpt-5-mini"]) throw new Error("models missing");
+            if (c.model !== "gw-example-com/gpt-5") throw new Error("default model wrong: " + c.model);
+            console.log("opencode.json OK");
+          '
+          # 配置里含密钥，权限必须是 600
+          perm=$(stat -c '%a' "$HOME/.config/opencode/opencode.json" 2>/dev/null || stat -f '%Lp' "$HOME/.config/opencode/opencode.json")
+          echo "permissions: $perm"
+          [ "$perm" = "600" ] || { echo "expected 600"; exit 1; }
+
+      - name: opencode.json merge preserves existing keys
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome2"
+          mkdir -p "$HOME/.config/opencode"
+          cat > "$HOME/.config/opencode/opencode.json" <<'JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "plugin": ["my-plugin"],
+            "provider": { "magpie": { "options": { "baseURL": "http://127.0.0.1:3425/v1" } } }
+          }
+          JSON
+          ./ai-cli-setup.sh opencode -y --skip-install \
+            --base-url https://openrouter.ai/api/v1 \
+            --api-key sk-test-123456 \
+            --models anthropic/claude-opus-4.8
+          node -e '
+            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
+            if (JSON.stringify(c.plugin) !== JSON.stringify(["my-plugin"])) throw new Error("plugin lost");
+            if (!c.provider.magpie) throw new Error("existing provider lost");
+            if (!c.provider.openrouter) throw new Error("openrouter not added");
+            if (c.model !== "openrouter/anthropic/claude-opus-4.8") throw new Error("default model wrong: " + c.model);
+            console.log("merge OK");
+          '
+          ls "$HOME/.config/opencode/" | grep -q 'opencode.json.bak' || { echo "backup missing"; exit 1; }
+
+      - name: dry-run grok config (isolated HOME)
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome3"
+          mkdir -p "$HOME"
+          ./ai-cli-setup.sh grok -y --skip-install \
+            --base-url https://gw.example.com/v1 \
+            --api-key sk-test-123456 \
+            --grok-alias CI --grok-search on
+          test -f "$HOME/.grok/config.toml"
+          grep -q 'default = "CI"' "$HOME/.grok/config.toml"
+          grep -q 'api_backend = "responses"' "$HOME/.grok/config.toml"
+          grep -q 'web_search = "CI"' "$HOME/.grok/config.toml"
+          perm=$(stat -c '%a' "$HOME/.grok/config.toml" 2>/dev/null || stat -f '%Lp' "$HOME/.grok/config.toml")
+          [ "$perm" = "600" ] || { echo "expected 600, got $perm"; exit 1; }
+
+      - name: --dry-run never writes anything
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome4"
+          mkdir -p "$HOME"
+          ./ai-cli-setup.sh opencode,grok -y --dry-run --skip-install \
+            --base-url https://gw.example.com/v1 --api-key sk-test-123456 --models a,b
+          if [ -e "$HOME/.config/opencode/opencode.json" ] || [ -e "$HOME/.grok/config.toml" ]; then
+            echo "dry-run wrote files!"; exit 1
+          fi
+          echo "dry-run wrote nothing"
+
+      - name: missing credentials fail loudly in -y mode
+        run: |
+          if ./ai-cli-setup.sh opencode -y --skip-install 2>/dev/null; then
+            echo "expected failure without --base-url"; exit 1
+          fi
+          echo "correctly failed"
+
+      - name: unknown tool is rejected
+        run: |
+          if ./ai-cli-setup.sh bogus 2>/dev/null; then echo "should fail"; exit 1; fi
+          if ./ai-cli-setup.sh opencode,nope 2>/dev/null; then echo "should fail"; exit 1; fi
+          echo "correctly rejected"
+
+      - name: comma-separated tool list as positional args
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome5"
+          mkdir -p "$HOME"
+          ./ai-cli-setup.sh opencode,grok -y --skip-install --dry-run \
+            --base-url https://gw.example.com/v1 --api-key {{SECRET_nyfdkmg7}} --models a,b
+          # dry-run 不落盘
+          [ ! -e "$HOME/.config/opencode/opencode.json" ]
+          [ ! -e "$HOME/.grok/config.toml" ]
+          echo "comma list OK"
+
+      - name: pipe mode (curl | bash style)
+        run: |
+          cat ai-cli-setup.sh | bash -s -- list >/dev/null
+          echo "pipe mode OK"
+
+      - name: bash 3.2 compatibility (macOS system bash)
+        if: runner.os == 'macOS'
+        run: /bin/bash -n ai-cli-setup.sh && /bin/bash ./ai-cli-setup.sh --version

@@ -1,9 +1,10 @@
 # ai-cli-setup
 
-把 **zxfccmm4** 的 5 个 AI CLI 一键安装脚本整合成 **一个入口**：
-凭据只问一次，五个工具依次装好，最后给一份汇总。
+把 **zxfccmm4** 的 5 个 AI CLI 一键安装脚本（Pi / OmO / Claude Code / Codex / Grok Build）
+加上 **OpenCode**，整合成 **一个入口**：凭据只问一次，六个工具依次装好，最后给一份汇总。
 
-> 本脚本只做「编排」，**不修改任何上游代码**。每个工具仍然由它自己的官方脚本安装。
+> 本脚本只做「编排」，**不修改任何上游代码**。前五个工具仍由它们自己的官方脚本安装；
+> `opencode` 上游没有对应仓库，由本脚本内置实现。
 
 ## 整合了哪些仓库
 
@@ -14,6 +15,11 @@
 | `claude` | [zxfccmm4/claude-code-linux-installer](https://github.com/zxfccmm4/claude-code-linux-installer) | Claude Code（Linux / WSL） | shell 配置或 `~/.claude/settings.json` |
 | `codex` | [zxfccmm4/deploy-codex](https://github.com/zxfccmm4/deploy-codex) | Codex CLI | `~/.codex/{config.toml,auth.json}` |
 | `grok` | [zxfccmm4/GrokBuild](https://github.com/zxfccmm4/GrokBuild) | Grok Build CLI | `~/.grok/config.toml` |
+| `opencode` | *(无上游仓库，本脚本内置)* | OpenCode（[opencode.ai](https://opencode.ai)） | `~/.config/opencode/opencode.json` |
+
+> `opencode` 不属于 zxfccmm4 系列仓库，由本脚本自己实现：官方 installer
+> （`https://opencode.ai/install`）装 CLI，失败回退 `npm i -g opencode-ai`，
+> 然后合并写入 `opencode.json`。
 
 ## 快速开始
 
@@ -45,6 +51,14 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 ./ai-cli-setup.sh grok -y --base-url https://gw.example.com/v1 \
   --api-key sk-xxxx --grok-search on --grok-alias MyGrok
 
+# 只装 OpenCode，接自定义 OpenAI 兼容网关
+./ai-cli-setup.sh opencode -y --base-url https://gw.example.com/v1 \
+  --api-key sk-xxxx --models gpt-5,gpt-5-mini
+
+# 指定 provider id / 安装方式
+./ai-cli-setup.sh opencode -y --base-url https://my.gw.io/v1 --api-key sk-xxxx \
+  --models a --opencode-provider mygw --opencode-method npm
+
 # 跳过某个工具 / 只跑一部分
 ./ai-cli-setup.sh all --skip claude,codex
 ./ai-cli-setup.sh all --only pi,grok
@@ -75,11 +89,11 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
    拉模型列表让你挑（拉不到就手输 `--models`）。
 3. **翻译成各家变量**：把统一凭据映射为上游各自认识的环境变量 / 参数，例如
 
-   | 统一 | pi | omo | claude | codex | grok |
-   |---|---|---|---|---|---|
-   | `--base-url` | `PISETUP_BASE_URL` | `OMO_BASE_URL` | `CLAUDE_BASE_URL` | `CODEX_BASE_URL` | 写入 `config.toml` |
-   | `--api-key` | `PISETUP_API_KEY` | `OMO_API_KEY` | `CLAUDE_API_KEY` | `CODEX_API_KEY` | 写入 `config.toml` |
-   | `--models` | `PISETUP_MODELS` | `OMO_MODELS` | — | — | — |
+   | 统一 | pi | omo | claude | codex | grok | opencode |
+   |---|---|---|---|---|---|---|
+   | `--base-url` | `PISETUP_BASE_URL` | `OMO_BASE_URL` | `CLAUDE_BASE_URL` | `CODEX_BASE_URL` | 写入 `config.toml` | `provider.options.baseURL` |
+   | `--api-key` | `PISETUP_API_KEY` | `OMO_API_KEY` | `CLAUDE_API_KEY` | `CODEX_API_KEY` | 写入 `config.toml` | `provider.options.apiKey` |
+   | `--models` | `PISETUP_MODELS` | `OMO_MODELS` | — | — | — | `provider.models` + `model` |
 
 4. **取上游脚本**：优先用仓库内 `upstream/<repo>/` 的快照；
    否则下载到 `~/.cache/ai-cli-setup/<repo>@<ref>/`
@@ -94,6 +108,7 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 |---|---|
 | pi / omo / claude / codex | 原样调用其入口脚本，参数与体验完全一致 |
 | GrokBuild | **有 `--base-url` / `--api-key` 时**由本脚本直接生成 `~/.grok/config.toml`（原子写入、`chmod 600`、自动备份、支持 `--dry-run`）；**没有凭据时**（或 `--delegate`）仍走上游的交互向导 |
+| OpenCode | 本脚本内置实现（上游无对应仓库）：官方 installer 装 CLI + 合并写入 `opencode.json`，已有的 `plugin` / `mcp` / 其他 provider 全部保留 |
 
 ## 安全
 
@@ -106,6 +121,7 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 
 `AICLI_BASE_URL` `AICLI_API_KEY` `AICLI_MODELS` `AICLI_MODEL` `AICLI_LANG`
 `AICLI_REF` `AICLI_CACHE_DIR` `AICLI_RAW_HOST` `AICLI_OWNER`
+`AICLI_OPENCODE_CONFIG` `AICLI_OPENCODE_PROVIDER` `AICLI_OPENCODE_METHOD`
 
 ## 兼容性
 
@@ -114,6 +130,18 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
   （claude 的 `--config-mode settings` 与 codex 的 TOML 校验额外需要 `python3`）
 - Linux 上安装 Codex 需要 `root`/`sudo`
 
+## CI
+
+`.github/workflows/ci.yml` 在每次 push / PR 上跑：
+
+- 所有自有脚本 `bash -n` + `shellcheck -S warning`（上游快照只做信息性检查）
+- Ubuntu + macOS（含系统 bash 3.2）双平台冒烟测试
+- `list` / `doctor` / `download` 离线快照解析
+- 在隔离 `$HOME` 里真写一次 `opencode.json` 与 `~/.grok/config.toml`，
+  校验内容、`600` 权限、备份文件，并验证 JSON 合并不丢已有键
+- 验证 `--dry-run` 不落盘、`-y` 缺凭据会报错、未知工具被拒绝、管道模式可用
+
 ## 许可
 
 本脚本 MIT。五个上游仓库均为 MIT，版权归各自作者（zxfccmm4）所有。
+OpenCode（[opencode.ai](https://opencode.ai)）版权归其作者所有。

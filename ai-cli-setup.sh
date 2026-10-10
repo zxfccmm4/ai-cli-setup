@@ -213,7 +213,30 @@ is_root() { [ "$(id -u)" -eq 0 ]; }
 # ---------------------------------------------------------------------------
 # 6. 工具清单（manifest）
 # ---------------------------------------------------------------------------
-ALL_TOOLS="pi omo claude codex grok"
+ALL_TOOLS="pi omo claude codex grok opencode"
+
+# opencode 不是 zxfccmm4 的仓库：本脚本自己实现安装与配置（官方 installer + opencode.json）
+OPENCODE_INSTALL_URL="${AICLI_OPENCODE_INSTALL_URL:-https://opencode.ai/install}"
+OPENCODE_NPM_PKG="${AICLI_OPENCODE_NPM_PKG:-opencode-ai}"
+OPENCODE_PROVIDER="${AICLI_OPENCODE_PROVIDER:-}"
+OPENCODE_PROVIDER_NAME="${AICLI_OPENCODE_PROVIDER_NAME:-}"
+OPENCODE_NPM="${AICLI_OPENCODE_NPM:-@ai-sdk/openai-compatible}"
+OPENCODE_CONFIG="${AICLI_OPENCODE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json}"
+OPENCODE_METHOD="${AICLI_OPENCODE_METHOD:-}"   # official | npm
+
+# 已内建了 OpenAI 兼容 provider 的知名网关域名（用它们自己的 provider id，否则用 openai-compatible）
+opencode_known_provider() {
+  local url
+  url="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$url" in
+    *openrouter.ai*) printf 'openrouter|OpenRouter|' ;;
+    *api.deepseek.com*) printf 'deepseek|DeepSeek|@ai-sdk/openai-compatible' ;;
+    *api.openai.com*) printf 'openai|OpenAI|' ;;
+    *generativelanguage.googleapis.com*) printf 'google|Google|' ;;
+    *open.bigmodel.cn*) printf 'zhipuglm|智谱 GLM|@ai-sdk/openai-compatible' ;;
+    *) return 1 ;;
+  esac
+}
 
 tool_repo() {
   case "$1" in
@@ -222,6 +245,7 @@ tool_repo() {
     claude) printf 'claude-code-linux-installer' ;;
     codex)  printf 'deploy-codex' ;;
     grok)   printf 'GrokBuild' ;;
+    opencode) return 1 ;;   # 无上游仓库
     *)      return 1 ;;
   esac
 }
@@ -233,6 +257,7 @@ tool_pin() {
     claude) printf '%s' "$PIN_claude" ;;
     codex)  printf '%s' "$PIN_codex" ;;
     grok)   printf '%s' "$PIN_grok" ;;
+    opencode) printf '%s' "${AICLI_OPENCODE_REF:-latest}" ;;
     *)      return 1 ;;
   esac
 }
@@ -245,6 +270,7 @@ tool_files() {
     claude) printf '%s\n' install-claude-code.sh ;;
     codex)  printf '%s\n' deploy-codex.sh ;;
     grok)   printf '%s\n' bootstrap.sh install-config.sh config.toml ;;
+    opencode) return 1 ;;   # 无上游文件：官方 installer 自取
     *)      return 1 ;;
   esac
 }
@@ -257,6 +283,7 @@ tool_entry() {
     claude) printf 'install-claude-code.sh' ;;
     codex)  printf 'deploy-codex.sh' ;;
     grok)   printf 'bootstrap.sh' ;;
+    opencode) return 1 ;;
     *)      return 1 ;;
   esac
 }
@@ -268,6 +295,7 @@ tool_title() {
     claude) printf 'Claude Code' ;;
     codex)  printf 'Codex CLI' ;;
     grok)   printf 'Grok Build' ;;
+    opencode) printf 'OpenCode' ;;
     *)      printf '%s' "$1" ;;
   esac
 }
@@ -279,6 +307,7 @@ tool_homepage() {
     claude) printf 'https://claude.ai/code' ;;
     codex)  printf 'https://github.com/openai/codex' ;;
     grok)   printf 'https://x.ai/cli' ;;
+    opencode) printf 'https://opencode.ai' ;;
     *)      printf '-' ;;
   esac
 }
@@ -298,11 +327,16 @@ tool_supports_lang() {
 
 # 上游是否支持 --dry-run
 tool_supports_dry_run() {
-  case "$1" in pi|omo|claude|codex) return 0 ;; *) return 1 ;; esac
+  case "$1" in pi|omo|claude|codex|opencode) return 0 ;; *) return 1 ;; esac
+}
+
+# 是否为「自实现」工具（没有上游仓库）
+tool_selfmanaged() {
+  case "$1" in opencode) return 0 ;; *) return 1 ;; esac
 }
 
 tool_valid() {
-  case "$1" in pi|omo|claude|codex|grok) return 0 ;; *) return 1 ;; esac
+  case "$1" in pi|omo|claude|codex|grok|opencode) return 0 ;; *) return 1 ;; esac
 }
 
 # 展开 "a,b" 形式的工具列表
@@ -565,6 +599,146 @@ write_grok_config() {
 }
 
 # ---------------------------------------------------------------------------
+# 10b. OpenCode：安装 + 写 ~/.config/opencode/opencode.json
+# ---------------------------------------------------------------------------
+# 本脚本自实现（opencode 不属于 zxfccmm4 系列仓库）。
+# 安装：官方 installer（https://opencode.ai/install），失败回退 npm -g opencode-ai。
+# 配置：合并写入 opencode.json 的 provider/model，其他键（plugin / mcp / agent）保留。
+run_opencode() {
+  local rc=0
+
+  # ---------- 1. 安装 / 更新 ----------
+  if [ "$SKIP_INSTALL" -eq 1 ]; then
+    info "$(lc '--skip-install: not touching the OpenCode binary' '--skip-install：不安装/更新 OpenCode 本体')"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    info "$(lc 'dry-run: would install/update OpenCode' 'dry-run：将安装/更新 OpenCode')"
+  else
+    local method="$OPENCODE_METHOD"
+    if [ -z "$method" ]; then
+      if command -v opencode >/dev/null 2>&1; then
+        method="official"
+      elif command -v npm >/dev/null 2>&1; then
+        method="npm"
+      else
+        method="official"
+      fi
+    fi
+
+    if [ "$method" = "npm" ]; then
+      command -v npm >/dev/null 2>&1 || { err "$(lc 'npm not found' '未找到 npm')"; return 1; }
+      info "$(lc "npm install -g $OPENCODE_NPM_PKG" "npm install -g $OPENCODE_NPM_PKG")"
+      npm install -g "$OPENCODE_NPM_PKG" >&2 || { err "$(lc 'npm install failed' 'npm 安装失败')"; return 1; }
+    else
+      info "$(lc "running the official installer ($OPENCODE_INSTALL_URL)" "运行官方安装器（$OPENCODE_INSTALL_URL）")"
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$OPENCODE_INSTALL_URL" | bash >&2 || rc=$?
+      elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$OPENCODE_INSTALL_URL" | bash >&2 || rc=$?
+      else
+        err "$(lc 'need curl or wget' '需要 curl 或 wget')"; return 1
+      fi
+      if [ "$rc" -ne 0 ]; then
+        warn "$(lc 'official installer failed; falling back to npm' '官方安装器失败；回退到 npm')"
+        if command -v npm >/dev/null 2>&1; then
+          npm install -g "$OPENCODE_NPM_PKG" >&2 || { err "$(lc 'npm install failed' 'npm 安装失败')"; return 1; }
+          rc=0
+        else
+          return 1
+        fi
+      fi
+    fi
+  fi
+
+  # ---------- 2. 写配置 ----------
+  if [ -z "$BASE_URL" ] || [ -z "$API_KEY" ]; then
+    info "$(lc 'no credentials given; skipping opencode.json (run `opencode auth login` instead)' '未提供凭据；跳过 opencode.json（可改用 opencode auth login）')"
+    return 0
+  fi
+
+  write_opencode_config
+}
+
+# 生成/合并 ~/.config/opencode/opencode.json
+write_opencode_config() {
+  local provider="$OPENCODE_PROVIDER"
+  local name="$OPENCODE_PROVIDER_NAME"
+  local npm="$OPENCODE_NPM"
+  local known
+
+  if [ -z "$provider" ]; then
+    if known="$(opencode_known_provider "$BASE_URL")"; then
+      provider="${known%%|*}"; name="${known#*|}"; npm="${name#*|}"; name="${name%%|*}"
+    else
+      # 未识别的网关：用自定义 provider id（由 host 推导），走 openai-compatible
+      provider="$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#/.*$##; s#[^A-Za-z0-9]+#-#g')"
+      [ -n "$provider" ] || provider="custom"
+      name="$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#/.*$##')"
+      [ -n "$npm" ] || npm="@ai-sdk/openai-compatible"
+    fi
+  fi
+
+  # 模型列表：默认第一个作为默认模型
+  local default_model="$MODEL"
+  if [ -z "$default_model" ] && [ -n "$MODELS" ]; then
+    default_model="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d '[:space:]')"
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    info "$(lc 'dry-run: would update' 'dry-run：将更新') $OPENCODE_CONFIG"
+    printf '    provider : %s%s\n' "$provider" "${name:+ ($name)}" >&2
+    printf '    baseURL  : %s\n' "$BASE_URL" >&2
+    printf '    apiKey   : %s\n' "$(mask_secret "$API_KEY")" >&2
+    printf '    models   : %s\n' "$MODELS" >&2
+    [ -n "$default_model" ] && printf '    default  : %s/%s\n' "$provider" "$default_model" >&2
+    return 0
+  fi
+
+  command -v node >/dev/null 2>&1 || { err "$(lc 'node is required to merge opencode.json' '合并 opencode.json 需要 node')"; return 1; }
+
+  mkdir -p "$(dirname "$OPENCODE_CONFIG")" || return 1
+  if [ -f "$OPENCODE_CONFIG" ]; then
+    local bak
+    bak="${OPENCODE_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$OPENCODE_CONFIG" "$bak" && info "$(lc "backed up existing config to $bak" "已备份原配置到 $bak")"
+  fi
+
+  # shellcheck disable=SC2016
+  KB_PROVIDER="$provider" KB_NAME="$name" KB_NPM="$npm" \
+  KB_BASE_URL="$BASE_URL" KB_API_KEY="$API_KEY" KB_MODELS="$MODELS" KB_DEFAULT="$default_model" \
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    const env = process.env;
+    let cfg = {};
+    if (fs.existsSync(file)) {
+      try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
+      catch (e) { console.error("warning: " + file + " is not plain JSON; regenerating"); }
+    }
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) cfg = {};
+    cfg.$schema = cfg.$schema || "https://opencode.ai/config.json";
+    const id = env.KB_PROVIDER;
+    cfg.provider = cfg.provider || {};
+    const p = cfg.provider[id] = cfg.provider[id] || {};
+    if (env.KB_NAME) p.name = env.KB_NAME;
+    if (env.KB_NPM) p.npm = env.KB_NPM;
+    p.options = Object.assign({}, p.options, { baseURL: env.KB_BASE_URL, apiKey: env.KB_API_KEY });
+    const models = (env.KB_MODELS || "").split(",").map(s => s.trim()).filter(Boolean);
+    if (models.length) {
+      p.models = p.models || {};
+      for (const m of models) {
+        if (!p.models[m]) p.models[m] = { name: m.split("/").pop() };
+      }
+    }
+    if (env.KB_DEFAULT) cfg.model = id + "/" + env.KB_DEFAULT;
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch (e) {}
+  ' "$OPENCODE_CONFIG" || { err "$(lc 'failed to write opencode.json' '写入 opencode.json 失败')"; return 1; }
+
+  ok "$(lc "wrote $OPENCODE_CONFIG" "已写入 $OPENCODE_CONFIG")"
+  info "$(lc "provider: $provider   default model: ${default_model:-(unchanged)}" "provider：$provider   默认模型：${default_model:-（未改）}")"
+}
+
+# ---------------------------------------------------------------------------
 # 11. 运行单个工具
 # ---------------------------------------------------------------------------
 # 为上游脚本构造环境变量（把统一凭据翻译成各家的变量名）
@@ -630,6 +804,12 @@ run_tool() {
   local dir entry extra envs rc=0
 
   step "$(tool_title "$tool") — $(lc 'start' '开始')"
+
+  # ---- OpenCode：本脚本自实现（无上游仓库） ----
+  if tool_selfmanaged "$tool"; then
+    run_opencode
+    return $?
+  fi
 
   dir="$(ensure_tool "$tool")" || { err "$(lc "$tool: download failed" "$tool：下载失败")"; return 1; }
   entry="$dir/$(tool_entry "$tool")"
@@ -744,10 +924,10 @@ cmd_run() {
   if [ "$multi" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || [ -n "$BASE_URL" ] || [ -n "$API_KEY" ]; then
     if [ "$DELEGATE" -eq 0 ]; then
       local want_models=1
-      # 只要 pi/omo 才需要模型列表
+      # 只有 pi / omo / opencode 需要模型列表
       local need_any=0
       for t in $tools; do
-        case "$t" in pi|omo) need_any=1 ;; esac
+        case "$t" in pi|omo|opencode) need_any=1 ;; esac
       done
       [ "$need_any" -eq 0 ] && want_models=0
       collect_credentials "$want_models"
@@ -790,14 +970,25 @@ cmd_run() {
 
 cmd_list() {
   printf '\n%s\n\n' "${BOLD}$(lc 'supported tools' '支持的工具')"
-  printf '  %-8s %-32s %-22s %s\n' "$(lc 'ID' 'ID')" "$(lc 'repository' '仓库')" "$(lc 'upstream ref' '上游版本')" "$(lc 'cached' '缓存')"
+  printf '  %-8s %-34s %-22s %s\n' "$(lc 'ID' 'ID')" "$(lc 'repository' '来源')" "$(lc 'upstream ref' '上游版本')" "$(lc 'cached' '缓存')"
   printf '  %s\n' "$(printf '%.0s─' $(seq 1 78) 2>/dev/null || printf -- '──────────────────────────────────────────────────────────────────────────────')"
-  local t repo ref dir cached
+  local t repo ref dir cached src
   for t in $ALL_TOOLS; do
-    repo="$(tool_repo "$t")"; ref="$(ref_for "$t")"; dir="$(cache_dir_for "$t")"
+    if tool_selfmanaged "$t"; then
+      src="$(lc 'built-in (no upstream)' '内置实现（无上游）')"; ref="-"; dir=""
+    else
+      repo="$(tool_repo "$t")"; ref="$(ref_for "$t")"; dir="$(cache_dir_for "$t")"
+      src="$REPO_OWNER/$repo"
+    fi
     cached="${DIM}-${RESET}"
-    if [ -s "$dir/$(tool_entry "$t")" ]; then cached="${GREEN}yes${RESET}"; fi
-    printf '  %-8s %-32s %-22s %b\n' "$t" "$REPO_OWNER/$repo" "${ref:0:20}" "$cached"
+    if tool_selfmanaged "$t"; then
+      cached="${DIM}n/a${RESET}"
+    elif local_dir_for "$t" >/dev/null 2>&1; then
+      cached="${GREEN}local${RESET}"
+    elif [ -n "$dir" ] && [ -s "$dir/$(tool_entry "$t")" ]; then
+      cached="${GREEN}yes${RESET}"
+    fi
+    printf '  %-8s %-34s %-22s %b\n' "$t" "$src" "${ref:0:20}" "$cached"
   done
   printf '\n'
   info "$(lc "cache: $CACHE_BASE" "缓存目录：$CACHE_BASE")"
@@ -827,7 +1018,7 @@ cmd_doctor() {
 
   printf '%s\n' "${BOLD}$(lc 'installed CLIs' '已安装的 CLI')${RESET}"
   local bin
-  for bin in pi omo claude codex grok; do
+  for bin in pi omo claude codex grok opencode; do
     if command -v "$bin" >/dev/null 2>&1; then
       printf '  %s  %-8s %s\n' "${GREEN}✓${RESET}" "$bin" "$(command -v "$bin")"
     else
@@ -838,7 +1029,7 @@ cmd_doctor() {
 
   printf '%s\n' "${BOLD}$(lc 'config files' '配置文件')${RESET}"
   local f
-  for f in "$HOME/.grok/config.toml" "$HOME/.codex/config.toml" "$HOME/.codex/auth.json"; do
+  for f in "$OPENCODE_CONFIG" "$HOME/.grok/config.toml" "$HOME/.codex/config.toml" "$HOME/.codex/auth.json"; do
     if [ -f "$f" ]; then
       printf '  %s  %s  %s\n' "${GREEN}✓${RESET}" "$f" "${DIM}$(ls -l "$f" | awk '{print $1}')${RESET}"
     else
@@ -854,6 +1045,10 @@ cmd_download() {
   local t rc=0
   for t in $tools; do
     step "$(lc "prefetch $(tool_title "$t")" "预取 $(tool_title "$t")")"
+    if tool_selfmanaged "$t"; then
+      info "$(lc 'built-in: nothing to download' '内置实现：无需下载')"
+      continue
+    fi
     ensure_tool "$t" >/dev/null || { err "$(lc "$t failed" "$t 失败")"; rc=1; }
   done
   [ "$rc" -eq 0 ] && ok "$(lc 'cache is ready' '缓存已就绪')"
@@ -869,7 +1064,7 @@ cmd_interactive_pick() {
   done
   printf '  %s) %s\n\n' "$i" "$(lc 'all of the above' '以上全部')"
   local ans=""
-  ask ans "$(lc 'choose (e.g. 1,3 or 6 for all)' '请选择（如 1,3；输入 6 表示全部）')" "$i"
+  ask ans "$(lc 'choose (e.g. 1,3 or 7 for all)' '请选择（如 1,3；输入 7 表示全部）')" "$i"
   case "$ans" in
     "$i"|"all"|"a") COMMAND_TOOLS=""; return 0 ;;
   esac
@@ -883,6 +1078,7 @@ cmd_interactive_pick() {
       3) picked="$picked claude" ;;
       4) picked="$picked codex" ;;
       5) picked="$picked grok" ;;
+      6) picked="$picked opencode" ;;
     esac
   done
   unset IFS
@@ -900,7 +1096,7 @@ ${BOLD}$AICLI_NAME $AICLI_VERSION${RESET} — $(lc 'one entry point for the zxfc
 ${BOLD}$(lc 'USAGE' '用法')${RESET}
   $AICLI_NAME [options] [command] [tool...]
   $AICLI_NAME all [tools...]
-  $AICLI_NAME pi|omo|claude|codex|grok
+  $AICLI_NAME pi|omo|claude|codex|grok|opencode
   $AICLI_NAME list | doctor | download [tools] | help
 
 ${BOLD}$(lc 'TOOLS' '工具')${RESET}
@@ -909,6 +1105,7 @@ ${BOLD}$(lc 'TOOLS' '工具')${RESET}
   claude   $(lc 'install + configure Claude Code' '安装并配置 Claude Code')
   codex    $(lc 'install + configure Codex CLI' '安装并配置 Codex CLI')
   grok     $(lc 'install Grok Build + write ~/.grok/config.toml' '安装 Grok Build 并写入 ~/.grok/config.toml')
+  opencode $(lc 'install + configure OpenCode (opencode.ai)' '安装并配置 OpenCode（opencode.ai）')
 
 ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
   -y, --yes                  $(lc 'non-interactive' '非交互模式')
@@ -917,10 +1114,13 @@ ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
   -l, --lang en|zh           $(lc 'output/wizard language' '输出与向导语言')
       --base-url URL         $(lc 'API endpoint base URL' '接口 base URL')
       --api-key KEY          $(lc 'API key / token' 'API key / token')
-      --models a,b,c         $(lc 'model ids to register (pi/omo)' '要注册的模型 id（pi/omo）')
-      --model ID             $(lc 'default model (claude/codex/grok)' '默认模型（claude/codex/grok）')
+      --models a,b,c         $(lc 'model ids to register (pi/omo/opencode)' '要注册的模型 id（pi/omo/opencode）')
+      --model ID             $(lc 'default model (claude/codex/grok/opencode)' '默认模型（claude/codex/grok/opencode）')
       --grok-alias NAME      $(lc 'GrokBuild local model alias' 'GrokBuild 本地模型别名')
       --grok-search on|off   $(lc 'enable server-side Search Tool' '开启服务端 Search Tool')
+      --opencode-provider ID $(lc 'OpenCode provider id (default: derived from host)' 'OpenCode provider id（默认由 host 推导）')
+      --opencode-method M    $(lc 'opencode install method: official|npm' 'OpenCode 安装方式：official|npm')
+      --opencode-config FILE $(lc 'path to opencode.json' 'opencode.json 路径')
       --only a,b             $(lc 'only these tools' '只处理这些工具')
       --skip a,b             $(lc 'skip these tools' '跳过这些工具')
       --skip-install         $(lc 'configure only, do not install/update the CLI' '只配置，不安装/更新 CLI')
@@ -950,16 +1150,20 @@ ${BOLD}$(lc 'EXAMPLES' '示例')${RESET}
   # $(lc 'forward flags to the upstream script' '把参数透传给上游脚本')
   $AICLI_NAME codex -- --restore
 
+  # $(lc 'OpenCode with a custom OpenAI-compatible gateway' 'OpenCode 接自定义 OpenAI 兼容网关')
+  $AICLI_NAME opencode -y --base-url https://gw.example.com/v1 --api-key sk-xxx --models gpt-5,gpt-5-mini
+
   # $(lc 'reproducible install at verified commits' '在已验证提交上安装（可复现）')
   $AICLI_NAME all --pin
 
 ${BOLD}$(lc 'ENVIRONMENT' '环境变量')${RESET}
   AICLI_BASE_URL AICLI_API_KEY AICLI_MODELS AICLI_MODEL AICLI_LANG
   AICLI_REF AICLI_CACHE_DIR AICLI_RAW_HOST AICLI_OWNER
+  AICLI_OPENCODE_CONFIG AICLI_OPENCODE_PROVIDER AICLI_OPENCODE_METHOD
 
 ${BOLD}$(lc 'UPSTREAM' '上游仓库')${RESET}
   $(lc 'this script wraps, and does not modify, these MIT-licensed repositories:' '本脚本仅封装、不修改以下 MIT 许可仓库：')
-$(for t in $ALL_TOOLS; do printf '  %-8s https://github.com/%s/%s\n' "$t" "$REPO_OWNER" "$(tool_repo "$t")"; done)
+$(for t in $ALL_TOOLS; do if tool_selfmanaged "$t"; then printf '  %-8s %s\n' "$t" "$(lc 'built-in (no upstream repo)' '内置实现（无上游仓库）')"; else printf '  %-8s https://github.com/%s/%s\n' "$t" "$REPO_OWNER" "$(tool_repo "$t")"; fi; done)
 EOF
 }
 
@@ -976,6 +1180,11 @@ parse_args() {
       --model) [ $# -ge 2 ] || die "--model $(lc 'needs a value' '需要一个值')"; MODEL="$2"; shift 2 ;;
       --grok-alias) [ $# -ge 2 ] || die "--grok-alias $(lc 'needs a value' '需要一个值')"; GROK_ALIAS="$2"; shift 2 ;;
       --grok-search) [ $# -ge 2 ] || die "--grok-search $(lc 'needs a value' '需要一个值')"; GROK_SEARCH="$2"; shift 2 ;;
+      --opencode-provider) [ $# -ge 2 ] || die "--opencode-provider $(lc 'needs a value' '需要一个值')"; OPENCODE_PROVIDER="$2"; shift 2 ;;
+      --opencode-provider-name) [ $# -ge 2 ] || die "--opencode-provider-name $(lc 'needs a value' '需要一个值')"; OPENCODE_PROVIDER_NAME="$2"; shift 2 ;;
+      --opencode-npm) [ $# -ge 2 ] || die "--opencode-npm $(lc 'needs a value' '需要一个值')"; OPENCODE_NPM="$2"; shift 2 ;;
+      --opencode-method) [ $# -ge 2 ] || die "--opencode-method $(lc 'needs a value' '需要一个值')"; OPENCODE_METHOD="$2"; shift 2 ;;
+      --opencode-config) [ $# -ge 2 ] || die "--opencode-config $(lc 'needs a value' '需要一个值')"; OPENCODE_CONFIG="$2"; shift 2 ;;
       --only) [ $# -ge 2 ] || die "--only $(lc 'needs a value' '需要一个值')"; ONLY="$2"; shift 2 ;;
       --skip) [ $# -ge 2 ] || die "--skip $(lc 'needs a value' '需要一个值')"; SKIP="$2"; shift 2 ;;
       --skip-install) SKIP_INSTALL=1; shift ;;
@@ -995,13 +1204,23 @@ parse_args() {
             if [ -z "$COMMAND" ]; then COMMAND="$1"; shift
             else die "$(lc "unexpected argument: $1" "多余参数：$1")"; fi
             ;;
-          pi|omo|claude|codex|grok)
+          pi|omo|claude|codex|grok|opencode)
             if [ -z "$COMMAND" ]; then COMMAND="$1"; shift
             else SELECTED+=("$1"); shift; fi
             ;;
           *)
-            if tool_valid "$1"; then SELECTED+=("$1"); shift
-            else die "$(lc "unknown command or tool: $1" "未知命令或工具：$1")"; fi
+            # 支持逗号分隔（如 `ai-cli-setup opencode,grok`）
+            local parts part ok=1
+            parts="$(printf '%s' "$1" | tr ',' ' ')"
+            for part in $parts; do
+              tool_valid "$part" || { ok=0; break; }
+            done
+            if [ "$ok" -eq 1 ]; then
+              for part in $parts; do SELECTED+=("$part"); done
+              shift
+            else
+              die "$(lc "unknown command or tool: $1" "未知命令或工具：$1")"
+            fi
             ;;
         esac
         ;;
@@ -1045,7 +1264,7 @@ main() {
 
   case "$COMMAND" in
     all) COMMAND_TOOLS="$ONLY" ;;
-    pi|omo|claude|codex|grok)
+    pi|omo|claude|codex|grok|opencode)
       if [ -n "$ONLY" ]; then COMMAND_TOOLS="$ONLY"; else COMMAND_TOOLS="$COMMAND"; fi
       ;;
   esac
