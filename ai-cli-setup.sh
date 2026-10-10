@@ -286,7 +286,17 @@ install_grok() {
 }
 install_opencode() {
   if have opencode; then info "$(lc 'opencode already installed' 'opencode 已安装')"; return 0; fi
-  run_official https://opencode.ai/install || ensure_npm && npm install -g opencode-ai
+  if run_official https://opencode.ai/install; then
+    hash -r 2>/dev/null || true
+    have opencode && return 0
+    # 官方装器把二进制放进本次新增目录（如 ~/.opencode/bin），当前 PATH 还没有
+    if [ -x "$HOME/.opencode/bin/opencode" ]; then
+      ok "opencode -> $HOME/.opencode/bin/opencode"
+      return 0
+    fi
+    return 0   # 安装器已报成功，PATH 交给 post_install_check 提示
+  fi
+  ensure_npm && npm install -g opencode-ai
 }
 
 # 安装后清 bash 命令路径缓存并确认二进制真实可用：
@@ -301,7 +311,7 @@ post_install_check() {
   else
     # 二进制可能在本次安装新增的 PATH 目录里（如 ~/.local/bin），当前 shell 尚未包含
     local cand
-    for cand in "$HOME/.local/bin/$bin" "$HOME/.grok/bin/$bin" "$HOME/.bun/bin/$bin"; do
+    for cand in "$HOME/.local/bin/$bin" "$HOME/.grok/bin/$bin" "$HOME/.bun/bin/$bin" "$HOME/.opencode/bin/$bin"; do
       if [ -x "$cand" ]; then ok "$(agent_title "$a") -> $cand"; return 0; fi
     done
     warn "$(lc "$bin not on PATH yet; open a new shell or re-login" "$bin 尚不在 PATH；请新开终端或重新登录")"
@@ -327,6 +337,15 @@ install_agent() {
 # ============================================================
 # 8. 模型列表拉取
 # ============================================================
+# 纯 bash 把多行合并为逗号分隔（OpenWrt/BusyBox 没有 paste）
+join_lines() {
+  local out="" l
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    out="${out:+$out,}$l"
+  done
+  printf '%s' "$out"
+}
 fetch_models() {
   local base="$1" key="${2:-}" url
   [ -n "$base" ] || return 1
@@ -341,8 +360,8 @@ fetch_models() {
     wget -q --timeout=30 ${key:+--header="Authorization: Bearer $key"} -O "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 1; }
   fi
   local ids=""
-  if have jq; then ids="$(jq -r '((.data // .models // [])[] | (.id // .name // .slug // empty))' < "$tmp" 2>/dev/null | head -200 | paste -sd, -)"
-  elif have node; then ids="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s);let a=d.data||d.models||[];if(!Array.isArray(a))a=Object.values(a);for(const x of a){const v=typeof x==="string"?x:(x&&(x.id||x.name||x.slug));if(v)console.log(v)}}catch(e){}}' < "$tmp" | head -200 | paste -sd, -)"
+  if have jq; then ids="$(jq -r '((.data // .models // [])[] | (.id // .name // .slug // empty))' < "$tmp" 2>/dev/null | head -200 | join_lines)"
+  elif have node; then ids="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s);let a=d.data||d.models||[];if(!Array.isArray(a))a=Object.values(a);for(const x of a){const v=typeof x==="string"?x:(x&&(x.id||x.name||x.slug));if(v)console.log(v)}}catch(e){}}' < "$tmp" | head -200 | join_lines)"
   elif have python3; then ids="$(python3 -c 'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(0)
@@ -350,7 +369,7 @@ a=d.get("data") or d.get("models") or []
 if isinstance(a,dict): a=list(a.values())
 for x in a:
     v = x if isinstance(x,str) else (x.get("id") or x.get("name") or x.get("slug") if isinstance(x,dict) else None)
-    if v: print(v)' < "$tmp" | head -200 | paste -sd, -)"
+    if v: print(v)' < "$tmp" | head -200 | join_lines)"
   fi
   rm -f "$tmp"
   [ -n "$ids" ] || return 1
@@ -593,6 +612,8 @@ write_opencode() {
     # key 不落盘：写入 {env:VAR} 引用，并把真实 key 放进该 env 变量。
     # shellcheck disable=SC2155
     local env_var="AICLI_${prov_upper}_API_KEY"
+    have node || true
+    if have node; then
     OC_FILE="$f" OC_OUT="$tmp" OC_PROVIDER="$provider" OC_NAME="$provider_name" \
     OC_PACKAGE="aisdk:${npm_pkg:-@ai-sdk/openai-compatible}" \
     OC_BASE="$BASE_URL" OC_KEYREF="{env:$env_var}" OC_MODELS="$MODELS" OC_DEFAULT="$model" \
@@ -635,8 +656,10 @@ PYK
         info "$(lc "updated $env_var in $shellrc" "已更新 $shellrc 中的 $env_var")"
       fi
     fi
+    fi   # have node (V2)
   else
     # ---- OpenCode V1：provider/options/npm，key 直写 ----
+    if have node; then
     OC_FILE="$f" OC_OUT="$tmp" OC_PROVIDER="$provider" OC_NAME="$provider_name" OC_NPM="$npm_pkg" \
     OC_BASE="$BASE_URL" OC_KEY="$API_KEY" OC_MODELS="$MODELS" OC_DEFAULT="$model" \
     node -e '
@@ -656,8 +679,55 @@ PYK
       if(env.OC_DEFAULT)cfg.model=env.OC_PROVIDER+"/"+env.OC_DEFAULT;
       fs.writeFileSync(env.OC_OUT,JSON.stringify(cfg,null,2)+"\n");
     '
+    fi   # have node (V1)
   fi
-  [ -s "$tmp" ] || { err "$(lc 'failed to build opencode.json (need node)' '生成 opencode.json 失败（需要 node）')"; rm -f "$tmp"; return 1; }
+  if [ ! -s "$tmp" ] && ! have node; then
+    # 纯 bash 兜底（OpenWrt 等无 node 环境）：生成全新配置；旧文件已备份
+    local m first=""
+    {
+      printf '{\n'
+      printf '  "$schema": "https://opencode.ai/config.json",\n'
+      if [ "$ocv" = "2" ]; then
+        printf '  "model": "%s/%s",\n' "$provider" "${model:-$(printf '%s' "$MODELS" | cut -d, -f1)}"
+        printf '  "providers": {\n'
+        printf '    "%s": {\n' "$provider"
+        printf '      "name": "%s",\n' "$provider_name"
+        printf '      "package": "aisdk:@ai-sdk/openai-compatible",\n'
+        printf '      "settings": { "baseURL": "%s", "apiKey": "{env:AICLI_%s_API_KEY}" },\n' \
+          "$(printf '%s' "$BASE_URL" | sed 's/"/\\"/g')" "$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')"
+        printf '      "models": {\n'
+        first=1
+        for m in $(printf '%s' "$MODELS" | tr ',' ' '); do
+          [ -n "$m" ] || continue
+          [ "$first" = "1" ] || printf ',\n'
+          printf '        "%s": { "name": "%s" }' "$(printf '%s' "$m" | sed 's/"/\\"/g')" "$(printf '%s' "$m" | sed 's/"/\\"/g; s/.*\///')"
+          first=0
+        done
+        printf '\n      }\n'
+        printf '    }\n  }\n}\n'
+      else
+        printf '  "model": "%s/%s",\n' "$provider" "${model:-$(printf '%s' "$MODELS" | cut -d, -f1)}"
+        printf '  "provider": {\n'
+        printf '    "%s": {\n' "$provider"
+        printf '      "name": "%s",\n' "$provider_name"
+        printf '      "npm": "@ai-sdk/openai-compatible",\n'
+        printf '      "options": { "baseURL": "%s", "apiKey": "%s" },\n' \
+          "$(printf '%s' "$BASE_URL" | sed 's/"/\\"/g')" "$(printf '%s' "$API_KEY" | sed 's/"/\\"/g')"
+        printf '      "models": {\n'
+        first=1
+        for m in $(printf '%s' "$MODELS" | tr ',' ' '); do
+          [ -n "$m" ] || continue
+          [ "$first" = "1" ] || printf ',\n'
+          printf '        "%s": { "name": "%s" }' "$(printf '%s' "$m" | sed 's/"/\\"/g')" "$(printf '%s' "$m" | sed 's/"/\\"/g; s/.*\///')"
+          first=0
+        done
+        printf '\n      }\n'
+        printf '    }\n  }\n}\n'
+      fi
+    } > "$tmp"
+    warn "$(lc 'no node; wrote a fresh opencode.json (previous file backed up)' '无 node；已生成全新 opencode.json（旧文件已备份）')"
+  fi
+  [ -s "$tmp" ] || { err "$(lc 'failed to build opencode.json' '生成 opencode.json 失败')"; rm -f "$tmp"; return 1; }
   if [ "$DRY_RUN" -eq 1 ]; then info "dry-run: $f"; rm -f "$tmp"; return 0; fi
   write_600 "$f" "$tmp"
   ok "$(lc "wrote $f" "已写入 $f") [v$ocv]"
