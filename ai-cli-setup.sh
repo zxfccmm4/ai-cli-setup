@@ -240,6 +240,10 @@ run_official() {  # run_official <url> [args...]
 
 ensure_node() {
   have node && return 0
+  # OpenWrt/musl：没有 apt，glibc 的 Node 也跑不起来，明确报可理解的错
+  if is_musl_system; then
+    die "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian docker container or skip agents that need it (pi/omo)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian Docker 容器里装 node，或跳过需要它的 agent（pi/omo）')"
+  fi
   warn "$(lc 'node not found; installing Node.js via nodesource (needs root)' '未找到 node；通过 nodesource 安装 Node.js（需要 root）')"
   if [ "$OS" = "macos" ]; then
     have brew || die "$(lc 'install Homebrew first (https://brew.sh)' '请先安装 Homebrew（https://brew.sh）')"
@@ -363,16 +367,23 @@ post_install_check() {
   for bindir in "$HOME/.local/bin" "$HOME/.grok/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
     if [ -x "$bindir/$bin" ]; then
       ok "$(agent_title "$a") -> $bindir/$bin"
-      # 确保以后每个 shell 都能找到：写入 shell rc（若尚未包含）
+      # 确保以后每个 shell 都能找到。OpenWrt/ash 不读 .bashrc：优先写 /etc/profile.d/
       local sub="${bindir#"$HOME"/}"
       local line='export PATH="$HOME/'$sub':$PATH"'
 
-      local rcfile=""
-      for cand in "$HOME/.bashrc" "$HOME/.zshrc"; do [ -f "$cand" ] && rcfile="$cand" && break; done
-      # OpenWrt 的 ash 不读 .bashrc；有 /etc/profile 时通常安装器已写
-      if [ -n "$rcfile" ] && ! grep -q "${bindir#"$HOME"/}" "$rcfile" 2>/dev/null; then
-        printf '\n# added by ai-cli-setup\n%s\n' "$line" >> "$rcfile"
-        info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
+      if [ -d /etc/profile.d ] && [ -w /etc/profile.d ]; then
+        local prof="/etc/profile.d/ai-cli-setup.sh"
+        if ! grep -q "$sub" "$prof" 2>/dev/null; then
+          printf '%s\n' "$line" >> "$prof"
+          info "$(lc "added PATH to $prof" "已把 PATH 写入 $prof")"
+        fi
+      else
+        local rcfile=""
+        for cand in "$HOME/.bashrc" "$HOME/.zshrc"; do [ -f "$cand" ] && rcfile="$cand" && break; done
+        if [ -n "$rcfile" ] && ! grep -q "$sub" "$rcfile" 2>/dev/null; then
+          printf '\n# added by ai-cli-setup\n%s\n' "$line" >> "$rcfile"
+          info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
+        fi
       fi
       info "$(lc "current shell: run this first" "当前终端先执行")  export PATH=\"$bindir:\$PATH\""
       return 0
@@ -559,22 +570,54 @@ write_claude() {
   mkdir -p "$dir"
   backup_file "$f"
   tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-c.XXXXXX")"
-  if ! CLAUDE_FILE="$f" CLAUDE_OUT="$tmp" CLAUDE_BASE="$base_clean" CLAUDE_KEY="$API_KEY" CLAUDE_MODEL="$model" \
-  node -e '
-    const fs=require("fs"),env=process.env;
-    let cfg={};
-    if(fs.existsSync(env.CLAUDE_FILE)){try{cfg=JSON.parse(fs.readFileSync(env.CLAUDE_FILE,"utf8"))}catch(e){}}
-    if(!cfg||typeof cfg!=="object"||Array.isArray(cfg)) cfg={};
-    cfg.env=Object.assign({},cfg.env,{
-      ANTHROPIC_BASE_URL:env.CLAUDE_BASE,
-      ANTHROPIC_AUTH_TOKEN:env.CLAUDE_KEY,
-      ...(env.CLAUDE_MODEL?{ANTHROPIC_MODEL:env.CLAUDE_MODEL}:{})
-    });
-    fs.writeFileSync(env.CLAUDE_OUT, JSON.stringify(cfg,null,2)+"\n");
-  ' 2>/dev/null; then
-    err "$(lc 'failed to build claude settings.json (need node)' '生成 claude settings.json 失败（需要 node）')"
-    rm -f "$tmp"; return 1
+  if have node; then
+    CLAUDE_FILE="$f" CLAUDE_OUT="$tmp" CLAUDE_BASE="$base_clean" CLAUDE_KEY="$API_KEY" CLAUDE_MODEL="$model" \
+    node -e '
+      const fs=require("fs"),env=process.env;
+      let cfg={};
+      if(fs.existsSync(env.CLAUDE_FILE)){try{cfg=JSON.parse(fs.readFileSync(env.CLAUDE_FILE,"utf8"))}catch(e){}}
+      if(!cfg||typeof cfg!=="object"||Array.isArray(cfg)) cfg={};
+      cfg.env=Object.assign({},cfg.env,{
+        ANTHROPIC_BASE_URL:env.CLAUDE_BASE,
+        ANTHROPIC_AUTH_TOKEN:env.CLAUDE_KEY,
+        ...(env.CLAUDE_MODEL?{ANTHROPIC_MODEL:env.CLAUDE_MODEL}:{})
+      });
+      fs.writeFileSync(env.CLAUDE_OUT, JSON.stringify(cfg,null,2)+"\n");
+    ' 2>/dev/null || true
   fi
+  if [ ! -s "$tmp" ]; then
+    # 纯 bash 兜底（无 node，如 OpenWrt）：保留已有键用 sed 合并 env 三个变量；
+    # 复杂度可控——只在已有文件是合法 JSON 对象时做键级替换，否则全新生成
+    if [ -f "$f" ] && grep -q '"env"' "$f" 2>/dev/null; then
+      sed \
+        -e 's#"ANTHROPIC_BASE_URL"[^,}]*#"ANTHROPIC_BASE_URL": "'"$(printf '%s' "$base_clean" | sed 's/[&/]/\\&/g')"'"#' \
+        -e 's#"ANTHROPIC_AUTH_TOKEN"[^,}]*#"ANTHROPIC_AUTH_TOKEN": "'"$(printf '%s' "$API_KEY" | sed 's/[&/]/\\&/g')"'"#' \
+        "$f" > "$tmp"
+      if [ -n "$model" ]; then
+        if grep -q '"ANTHROPIC_MODEL"' "$tmp" 2>/dev/null; then
+          sed -i 's#"ANTHROPIC_MODEL"[^,}]*#"ANTHROPIC_MODEL": "'"$(printf '%s' "$model" | sed 's/[&/]/\\&/g')"'"#' "$tmp" 2>/dev/null || true
+        else
+          # 键不存在：AUTH_TOKEN 值后插入（BSD/GNU sed 通用：无 \n，用逗号前置换行需求为零的行内追加）
+          # 若替换后 JSON 仍不合法，最终 write 前有 node 侧校验兜底；musl 无 node 时
+          # 该分支仅影响已有配置缺 MODEL 键的罕见场景，退化为不写 MODEL（claude 会用默认）。
+          local msafe; msafe="$(printf '%s' "$model" | sed 's/[&/]/\\&/g')"
+          sed -i -e 's#"ANTHROPIC_AUTH_TOKEN"\([^,}]*\)#"ANTHROPIC_AUTH_TOKEN"\1, "ANTHROPIC_MODEL": "'"$msafe"'"#' "$tmp" 2>/dev/null || true
+        fi
+      fi
+      warn "$(lc 'no node; merged env keys into existing settings.json (backed up)' '无 node；已合并 env 键到现有 settings.json（已备份）')"
+    else
+      {
+        printf '{\n'
+        printf '  "env": {\n'
+        printf '    "ANTHROPIC_BASE_URL": "%s",\n' "$(printf '%s' "$base_clean" | sed 's/"/\\"/g')"
+        printf '    "ANTHROPIC_AUTH_TOKEN": "%s"' "$(printf '%s' "$API_KEY" | sed 's/"/\\"/g')"
+        [ -n "$model" ] && printf ',\n    "ANTHROPIC_MODEL": "%s"' "$(printf '%s' "$model" | sed 's/"/\\"/g')"
+        printf '\n  }\n}\n'
+      } > "$tmp"
+      warn "$(lc 'no node; wrote a fresh settings.json (previous file backed up)' '无 node；已生成全新 settings.json（旧文件已备份）')"
+    fi
+  fi
+  [ -s "$tmp" ] || { err "$(lc 'failed to build claude settings.json' '生成 claude settings.json 失败')"; rm -f "$tmp"; return 1; }
   if [ "$DRY_RUN" -eq 1 ]; then info "dry-run: $f"; rm -f "$tmp"; return 0; fi
   write_600 "$f" "$tmp"
   ok "$(lc "wrote $f" "已写入 $f")"
