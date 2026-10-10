@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # CHANGELOG 检查需要完整历史（默认 depth=1 会看不到旧提交）
+          fetch-depth: 0
 
       - name: Show environment
         run: |
@@ -41,15 +44,35 @@ jobs:
       - name: ShellCheck (our script only)
         run: shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
 
-      - name: CHANGELOG is up to date
+      - name: CHANGELOG is present and well-formed
         run: |
+          test -f CHANGELOG.md || { echo "::error::CHANGELOG.md missing"; exit 1; }
+          head -1 CHANGELOG.md | grep -qx '# Changelog' || { echo "::error::CHANGELOG.md header wrong"; exit 1; }
+          grep -q '^## \[' CHANGELOG.md || { echo "::error::no version sections"; exit 1; }
+          echo "CHANGELOG.md OK"
+
+      - name: CHANGELOG freshness (warning only)
+        run: |
+          # 严格失败会造成鸡生蛋问题（打 tag 后 --all 输出会变），
+          # 所以这里只在 Step Summary 里提醒，不阻塞合并。
           cp CHANGELOG.md /tmp/changelog.before
           ./scripts/changelog.sh --all --update CHANGELOG.md
-          if ! diff -u /tmp/changelog.before CHANGELOG.md; then
-            echo "::error::CHANGELOG.md is stale. Run: ./scripts/changelog.sh --all --update CHANGELOG.md"
-            exit 1
+          if diff -u /tmp/changelog.before CHANGELOG.md > /tmp/changelog.diff; then
+            echo "CHANGELOG.md is up to date"
+          else
+            {
+              echo '### ⚠️ CHANGELOG.md is stale'
+              echo
+              echo 'Run `./scripts/changelog.sh --all --update CHANGELOG.md` and commit.'
+              echo
+              echo '```diff'
+              head -60 /tmp/changelog.diff
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::CHANGELOG.md is stale - run ./scripts/changelog.sh --all --update CHANGELOG.md"
           fi
-          echo "CHANGELOG.md is up to date"
+          # 恢复，避免后续步骤受影响
+          cp /tmp/changelog.before CHANGELOG.md
 
       - name: changelog.sh is idempotent
         run: |
