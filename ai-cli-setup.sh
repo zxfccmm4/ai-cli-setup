@@ -11,7 +11,7 @@
 #   grok    -> zxfccmm4/GrokBuild                 安装 Grok Build + 写入 ~/.grok/config.toml
 #
 # 本脚本不修改任何上游代码：它只负责
-#   1) 选择工具 (单个 / 多个 / 全部)
+#   1) 交互流程：先选语言 (English / 中文)，再选 agent (单个 / 多个 / 全部)
 #   2) 把 base_url / api_key / 模型 等凭据「问一次，喂给所有工具」
 #   3) 下载上游脚本到缓存 (raw.githubusercontent.com，失败自动切 jsDelivr)
 #   4) 逐个执行、互不影响，最后给出汇总报告
@@ -21,7 +21,7 @@
 #   curl -fsSL .../ai-cli-setup.sh | bash -s -- claude -y --base-url URL --api-key KEY
 #
 # 本地用法 / local usage:
-#   ./ai-cli-setup.sh                 # 交互选择
+#   ./ai-cli-setup.sh                 # 交互：选语言 -> 选 agent -> 填凭据
 #   ./ai-cli-setup.sh all             # 全部（凭据问一次）
 #   ./ai-cli-setup.sh pi -y --base-url URL --api-key KEY --models a,b
 #   ./ai-cli-setup.sh codex -- --restore      # "--" 之后的参数原样透传给上游
@@ -29,11 +29,16 @@
 #   ./ai-cli-setup.sh doctor
 #   ./ai-cli-setup.sh download all
 #
+# 交互输入源 / interactive input source:
+#   stdin 是终端时用 stdin；管道模式 (curl | bash) 用 /dev/tty。
+#   容器 / CI 里没有 /dev/tty 时，用 AICLI_ASSUME_TTY=1 或 --assume-tty
+#   把 stdin 当作交互输入。
+#
 # 许可 / license: MIT（本脚本）。上游各自保留其许可（均为 MIT）。
 #
 set -Eeuo pipefail
 
-AICLI_VERSION="1.0.0"
+AICLI_VERSION="1.1.0"
 AICLI_NAME="ai-cli-setup"
 
 # ---------------------------------------------------------------------------
@@ -62,6 +67,15 @@ USE_CACHE=1
 REFRESH=0
 
 LANG_CODE="${AICLI_LANG:-}"
+LANG_EXPLICIT=0        # 用户是否显式指定了语言（--lang / AICLI_LANG），是则跳过语言选择
+if [ -n "${AICLI_LANG:-}" ]; then LANG_EXPLICIT=1; fi
+
+ASSUME_TTY=0           # AICLI_ASSUME_TTY=1 / --assume-tty：把 stdin 当作交互输入
+case "$(printf '%s' "${AICLI_ASSUME_TTY:-0}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) ASSUME_TTY=1 ;;
+  *)             ASSUME_TTY=0 ;;
+esac
+
 FORCE_INTERACTIVE=0
 NON_INTERACTIVE=0
 DELEGATE=0
@@ -129,28 +143,41 @@ die()  { err "$*"; exit 1; }
 # ---------------------------------------------------------------------------
 # 4. TTY / 交互
 # ---------------------------------------------------------------------------
+# stdin 能否直接当交互输入：是终端，或用户显式 AICLI_ASSUME_TTY=1
+stdin_is_input() { [ -t 0 ] || [ "$ASSUME_TTY" -eq 1 ]; }
+
+# 是否走交互流程（-y / 无可用输入源时为否）
+interactive_run() { [ "$NON_INTERACTIVE" -eq 0 ] && have_tty; }
+
 have_tty() {
-  [ -t 0 ] && return 0
+  stdin_is_input && return 0
   { exec 9<>/dev/tty; } 2>/dev/null || return 1
   exec 9>&- 9<&- 2>/dev/null || true
   return 0
 }
 
 # read_tty <变量名> <提示语> <是否隐藏 0|1>
+# 输入源：stdin 可用（终端 / AICLI_ASSUME_TTY=1）就读 stdin；
+#         否则（curl | bash 之类管道模式）走 /dev/tty。
 read_tty() {
   local __var="$1" __prompt="$2" __secret="${3:-0}" __ans=""
-  if [ ! -t 0 ]; then
-    # 管道模式：脚本已读完 stdin，只能走 /dev/tty
+  local __via_tty=0
+  stdin_is_input || __via_tty=1
+
+  if [ "$__via_tty" -eq 1 ]; then
     printf '%s' "${__prompt}" > /dev/tty
-  else
+  elif [ -t 0 ]; then
     printf '%s' "${__prompt}"
-  fi
-  if [ "$__secret" -eq 1 ]; then
-    if [ -t 0 ]; then IFS= read -r -s __ans || true; printf '\n'
-    else IFS= read -r -s __ans < /dev/tty || true; printf '\n' > /dev/tty; fi
   else
-    if [ -t 0 ]; then IFS= read -r __ans || true
+    printf '%s' "${__prompt}" >&2
+  fi
+
+  if [ "$__via_tty" -eq 1 ]; then
+    if [ "$__secret" -eq 1 ]; then IFS= read -r -s __ans < /dev/tty || true; printf '\n' > /dev/tty
     else IFS= read -r __ans < /dev/tty || true; fi
+  else
+    if [ "$__secret" -eq 1 ]; then IFS= read -r -s __ans || true; printf '\n'
+    else IFS= read -r __ans || true; fi
   fi
   printf -v "$__var" '%s' "$__ans"
 }
@@ -304,7 +331,7 @@ tool_homepage() {
   case "$1" in
     pi)     printf 'https://pi.dev' ;;
     omo)    printf 'https://omo.dev' ;;
-    claude) printf 'https://claude.ai/code' ;;
+    claude) printf 'https://claude.com/product/claude-code' ;;
     codex)  printf 'https://github.com/openai/codex' ;;
     grok)   printf 'https://x.ai/cli' ;;
     opencode) printf 'https://opencode.ai' ;;
@@ -339,10 +366,10 @@ tool_valid() {
   case "$1" in pi|omo|claude|codex|grok|opencode) return 0 ;; *) return 1 ;; esac
 }
 
-# 展开 "a,b" 形式的工具列表
+# 展开 "a,b" / "a b" 形式的工具列表
 expand_tools() {
   local spec="$1" t out=""
-  local IFS=','
+  spec="$(printf '%s' "$spec" | tr ',' ' ')"
   for t in $spec; do
     t="$(printf '%s' "$t" | tr -d '[:space:]')"
     [ -n "$t" ] || continue
@@ -921,7 +948,8 @@ cmd_run() {
   for t in $tools; do n=$((n + 1)); done
   [ "$n" -gt 1 ] && multi=1
 
-  if [ "$multi" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || [ -n "$BASE_URL" ] || [ -n "$API_KEY" ]; then
+  # 交互运行（含菜单选出的单个 agent）也统一收集凭据；--delegate 交给上游向导
+  if [ "$multi" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || [ -n "$BASE_URL" ] || [ -n "$API_KEY" ] || interactive_run; then
     if [ "$DELEGATE" -eq 0 ]; then
       local want_models=1
       # 只有 pi / omo / opencode 需要模型列表
@@ -1055,35 +1083,105 @@ cmd_download() {
   return $rc
 }
 
-cmd_interactive_pick() {
-  printf '\n%s\n\n' "${BOLD}$(lc 'Which tools do you want to set up?' '要配置哪些工具？')"
-  local t i=1
+# 菜单序号 <-> 工具 id
+tool_at_index() {
+  local want="$1" t i=1
   for t in $ALL_TOOLS; do
-    printf '  %s) %-12s %s\n' "$i" "$(tool_title "$t")" "${DIM}$(tool_homepage "$t")${RESET}"
+    if [ "$i" -eq "$want" ]; then printf '%s' "$t"; return 0; fi
     i=$((i + 1))
   done
-  printf '  %s) %s\n\n' "$i" "$(lc 'all of the above' '以上全部')"
-  local ans=""
-  ask ans "$(lc 'choose (e.g. 1,3 or 7 for all)' '请选择（如 1,3；输入 7 表示全部）')" "$i"
-  case "$ans" in
-    "$i"|"all"|"a") COMMAND_TOOLS=""; return 0 ;;
-  esac
-  local picked="" n
-  local IFS=','
-  for n in $ans; do
-    n="$(printf '%s' "$n" | tr -d '[:space:]')"
-    case "$n" in
-      1) picked="$picked pi" ;;
-      2) picked="$picked omo" ;;
-      3) picked="$picked claude" ;;
-      4) picked="$picked codex" ;;
-      5) picked="$picked grok" ;;
-      6) picked="$picked opencode" ;;
+  return 1
+}
+
+tool_count() {
+  local t n=0
+  for t in $ALL_TOOLS; do n=$((n + 1)); done
+  printf '%s' "$n"
+}
+
+# parse_tool_selection <输入> -> 打印逗号分隔的工具 id；非法输入返回 1
+#   单选 6 / 多选 1,3 或 "1 3" 或 1-3 / 全部 a 或 all 或 0 或 <最后一项序号+1>
+parse_tool_selection() {
+  local spec="$1" tok lo hi i sel="" t max
+  spec="$(printf '%s' "$spec" | tr ',' ' ')"
+  case "$(printf '%s' "$spec" | tr -d '[:space:]')" in '') return 1 ;; esac
+
+  max="$(tool_count)"
+
+  for tok in $spec; do
+    tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
+    case "$tok" in
+      a|all|'*') printf '%s' "$ALL_TOOLS" | tr ' ' ','; return 0 ;;
     esac
+    # 0 与「最后一项序号 + 1」都表示全部
+    if [ "$tok" = "0" ] || [ "$tok" = "$((max + 1))" ]; then
+      printf '%s' "$ALL_TOOLS" | tr ' ' ','; return 0
+    fi
+    case "$tok" in
+      *-*) lo="${tok%%-*}"; hi="${tok##*-}" ;;
+      *)   lo="$tok"; hi="$tok" ;;
+    esac
+    case "$lo" in ''|*[!0-9]*) return 1 ;; esac
+    case "$hi" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$lo" -ge 1 ] || return 1
+    [ "$hi" -le "$max" ] || return 1
+    [ "$lo" -le "$hi" ] || return 1
+    for i in $(seq "$lo" "$hi"); do
+      t="$(tool_at_index "$i")" || return 1
+      case ",$sel," in *",$t,"*) continue ;; esac
+      sel="${sel:+$sel,}$t"
+    done
   done
-  unset IFS
-  [ -n "$picked" ] || die "$(lc 'nothing selected' '未选择任何工具')"
-  COMMAND_TOOLS="$picked"
+
+  [ -n "$sel" ] || return 1
+  printf '%s' "$sel"
+}
+
+# 交互第一步：选语言（English / 中文）
+prompt_language() {
+  if [ "$LANG_EXPLICIT" -eq 1 ]; then return 0; fi
+  local ans=""
+  printf '\n%s\n\n' "${BOLD}Select language  /  选择语言${RESET}" >&2
+  printf '  1) English\n  2) 中文 (Chinese)\n\n' >&2
+  ask ans "choose / 请选择" "$([ "$LANG_CODE" = "zh" ] && printf '2' || printf '1')"
+  case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
+    2|zh|cn|chinese|中文) LANG_CODE="zh" ;;
+    1|en|english)         LANG_CODE="en" ;;
+    *)                    : ;;
+  esac
+}
+
+# 交互第二步：选 agent（单个 / 多个 / 全部）
+cmd_interactive_pick() {
+  local t i=1 all_key ans picked label tt n
+  all_key=$(( $(tool_count) + 1 ))
+
+  printf '\n%s\n\n' "${BOLD}$(lc 'Which AI agents do you want to set up?' '要配置哪些 AI agent？')" >&2
+  for t in $ALL_TOOLS; do
+    printf '  %s) %-12s %s\n' "$i" "$(tool_title "$t")" "${DIM}$(tool_homepage "$t")${RESET}" >&2
+    i=$((i + 1))
+  done
+  printf '  %s) %s\n\n' "$all_key" "$(lc 'all of the above' '以上全部')" >&2
+  printf '%s\n\n' "${DIM}$(lc "  one number = single   |   1,3 or 1-3 = several   |   a or $all_key = all" "  单个数字 = 单选   |   1,3 或 1-3 = 多选   |   a 或 $all_key = 全部")${RESET}" >&2
+
+  for _attempt in 1 2 3; do
+    ask ans "$(lc 'select' '请选择')" "$all_key"
+    if picked="$(parse_tool_selection "$ans")"; then
+      COMMAND_TOOLS="$picked"
+      label=""; n=0
+      for tt in $(printf '%s' "$picked" | tr ',' ' '); do
+        label="${label:+$label, }$(tool_title "$tt")"
+        n=$((n + 1))
+      done
+      info "$(lc "selected: $label" "已选择：$label")"
+      if [ "$n" -eq "$(tool_count)" ]; then
+        info "$(lc 'all agents will be set up' '将配置全部 agent')"
+      fi
+      return 0
+    fi
+    warn "$(lc "invalid choice: ${ans:-<empty>}" "无效选择：${ans:-<空>}")"
+  done
+  die "$(lc 'nothing selected' '未选择任何工具')"
 }
 
 # ---------------------------------------------------------------------------
@@ -1110,6 +1208,7 @@ ${BOLD}$(lc 'TOOLS' '工具')${RESET}
 ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
   -y, --yes                  $(lc 'non-interactive' '非交互模式')
   -i, --interactive          $(lc 'force upstream wizards' '强制使用上游向导')
+      --assume-tty           $(lc 'treat stdin as interactive input (containers/CI without /dev/tty)' '把 stdin 当作交互输入（无 /dev/tty 的容器 / CI）')
       --delegate             $(lc 'never collect credentials; let each upstream wizard ask' '不收集凭据，完全交给上游向导')
   -l, --lang en|zh           $(lc 'output/wizard language' '输出与向导语言')
       --base-url URL         $(lc 'API endpoint base URL' '接口 base URL')
@@ -1134,6 +1233,12 @@ ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
   -V, --version              $(lc 'version' '显示版本')
       --                     $(lc 'everything after is forwarded to the upstream script' '之后的参数原样透传给上游脚本')
 
+${BOLD}$(lc 'INTERACTIVE FLOW' '交互流程')${RESET}
+  1. $(lc 'choose the language: English / 中文' '选择语言：English / 中文')
+  2. $(lc 'choose the agents: one (2) | several (1,3 or 1-3) | all (a)' '选择 agent：单个（2）| 多个（1,3 或 1-3）| 全部（a）')
+  3. $(lc 'enter base_url + api_key (asked once, shared by every agent)' '填写 base_url + api_key（只问一次，所有 agent 共用）')
+  $(lc 'both steps are skipped with -y, with --lang, or when stdin has no input' '加 -y、加 --lang，或 stdin 不可用时，两步都会跳过')
+
 ${BOLD}$(lc 'EXAMPLES' '示例')${RESET}
   # $(lc 'everything, credentials asked once' '全部安装，凭据只问一次')
   $AICLI_NAME all
@@ -1157,9 +1262,15 @@ ${BOLD}$(lc 'EXAMPLES' '示例')${RESET}
   $AICLI_NAME all --pin
 
 ${BOLD}$(lc 'ENVIRONMENT' '环境变量')${RESET}
-  AICLI_BASE_URL AICLI_API_KEY AICLI_MODELS AICLI_MODEL AICLI_LANG
-  AICLI_REF AICLI_CACHE_DIR AICLI_RAW_HOST AICLI_OWNER
-  AICLI_OPENCODE_CONFIG AICLI_OPENCODE_PROVIDER AICLI_OPENCODE_METHOD
+  $(lc 'credentials / 凭据' '凭据 / credentials')
+    AICLI_BASE_URL  AICLI_API_KEY  AICLI_MODELS  AICLI_MODEL
+  $(lc 'behaviour / 行为' '行为 / behaviour')
+    AICLI_LANG          $(lc 'en|zh; also skips the language prompt' 'en|zh；设置后跳过语言选择')
+    AICLI_ASSUME_TTY    $(lc '1 = treat stdin as interactive input' '1 = 把 stdin 当作交互输入')
+    AICLI_REF  AICLI_CACHE_DIR  AICLI_RAW_HOST  AICLI_JSD_HOST  AICLI_OWNER
+    AICLI_GROK_ALIAS  AICLI_GROK_SEARCH  AICLI_GROK_CONTEXT_WINDOW
+    AICLI_OPENCODE_CONFIG  AICLI_OPENCODE_PROVIDER  AICLI_OPENCODE_PROVIDER_NAME
+    AICLI_OPENCODE_NPM  AICLI_OPENCODE_METHOD  AICLI_OPENCODE_INSTALL_URL
 
 ${BOLD}$(lc 'UPSTREAM' '上游仓库')${RESET}
   $(lc 'this script wraps, and does not modify, these MIT-licensed repositories:' '本脚本仅封装、不修改以下 MIT 许可仓库：')
@@ -1172,8 +1283,9 @@ parse_args() {
     case "$1" in
       -y|--yes) NON_INTERACTIVE=1; shift ;;
       -i|--interactive) FORCE_INTERACTIVE=1; shift ;;
+      --assume-tty) ASSUME_TTY=1; shift ;;
       --delegate) DELEGATE=1; shift ;;
-      -l|--lang) [ $# -ge 2 ] || die "--lang $(lc 'needs a value' '需要一个值')"; LANG_CODE="$(normalize_lang "$2")"; shift 2 ;;
+      -l|--lang) [ $# -ge 2 ] || die "--lang $(lc 'needs a value' '需要一个值')"; LANG_CODE="$(normalize_lang "$2")"; LANG_EXPLICIT=1; shift 2 ;;
       --base-url) [ $# -ge 2 ] || die "--base-url $(lc 'needs a value' '需要一个值')"; BASE_URL="$2"; shift 2 ;;
       --api-key|--token) [ $# -ge 2 ] || die "--api-key $(lc 'needs a value' '需要一个值')"; API_KEY="$2"; shift 2 ;;
       --models) [ $# -ge 2 ] || die "--models $(lc 'needs a value' '需要一个值')"; MODELS="$2"; shift 2 ;;
@@ -1252,18 +1364,26 @@ main() {
     download) cmd_download; exit $? ;;
   esac
 
-  if [ -z "$COMMAND" ]; then
-    if [ "$NON_INTERACTIVE" -eq 1 ] || ! have_tty; then
-      COMMAND="all"
-    else
-      printf '\n%s\n' "${BOLD}$AICLI_NAME $AICLI_VERSION${RESET} — $(lc 'unified AI CLI setup' '统一 AI CLI 安装入口')"
+  # 交互模式：第一步选语言，第二步选 agent
+  if interactive_run; then
+    printf '\n%s\n' "${BOLD}$AICLI_NAME $AICLI_VERSION${RESET} — $(lc 'unified AI CLI setup' '统一 AI CLI 安装入口')" >&2
+    prompt_language
+  fi
+
+  # 没有命令也没有 --only 时弹菜单；菜单选完直接用它的结果
+  if [ -z "$COMMAND" ] && [ -z "$ONLY" ]; then
+    if interactive_run; then
       cmd_interactive_pick
+      COMMAND="menu"
+    else
       COMMAND="all"
     fi
   fi
+  [ -n "$COMMAND" ] || COMMAND="all"
 
   case "$COMMAND" in
     all) COMMAND_TOOLS="$ONLY" ;;
+    menu) : ;;   # COMMAND_TOOLS 已由菜单设置（空 = 全部）
     pi|omo|claude|codex|grok|opencode)
       if [ -n "$ONLY" ]; then COMMAND_TOOLS="$ONLY"; else COMMAND_TOOLS="$COMMAND"; fi
       ;;

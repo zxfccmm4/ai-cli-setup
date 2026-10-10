@@ -217,6 +217,66 @@ jobs:
           if ./ai-cli-setup.sh opencode,nope 2>/dev/null; then echo "should fail"; exit 1; fi
           echo "correctly rejected"
 
+      - name: interactive flow (select language, then agents) via AICLI_ASSUME_TTY
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome6"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export AICLI_CACHE_DIR="$RUNNER_TEMP/aicli-cache"
+          mkdir -p "$HOME"
+          # 2=中文 -> 6=OpenCode -> base_url -> api_key -> models
+          printf '2\n6\nhttps://gw.example.com/v1\nsk-ci-interactive\nm1,m2\n' \
+            | ./ai-cli-setup.sh --skip-install > /tmp/i1.out 2>&1
+          test -f "$HOME/.config/opencode/opencode.json"
+          grep -q '请选择' /tmp/i1.out                 # language prompt present
+          grep -q '已选择：OpenCode' /tmp/i1.out       # single pick respected
+          node -e '
+            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
+            const p = c.provider["gw-example-com"];
+            if (!p) throw new Error("provider missing");
+            if (p.options.apiKey !== "sk-ci-interactive") throw new Error("apiKey wrong");
+            if (!p.models["m1"] || !p.models["m2"]) throw new Error("models missing");
+            console.log("zh + single pick OK");
+          '
+          # English + multi pick (5,6) + dry-run: nothing written
+          export HOME="$RUNNER_TEMP/fakehome7"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          mkdir -p "$HOME"
+          printf '1\n5,6\nhttps://gw.example.com/v1\nsk-x\nm1\n' \
+            | ./ai-cli-setup.sh --skip-install --dry-run > /tmp/i2.out 2>&1
+          grep -q 'selected: Grok Build, OpenCode' /tmp/i2.out
+          if [ -e "$HOME/.config/opencode/opencode.json" ] || [ -e "$HOME/.grok/config.toml" ]; then
+            echo "dry-run wrote files"; exit 1
+          fi
+          echo "en + multi pick (dry-run) OK"
+
+      - name: interactive menu retries on invalid input
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome8"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export AICLI_CACHE_DIR="$RUNNER_TEMP/aicli-cache"
+          mkdir -p "$HOME"
+          printf '1\n9\nzz\n6\nhttps://gw.example.com/v1\nsk-retry\nm1\n' \
+            | ./ai-cli-setup.sh --skip-install > /tmp/i3.out 2>&1
+          grep -q 'invalid choice: 9' /tmp/i3.out
+          grep -q 'invalid choice: zz' /tmp/i3.out
+          grep -q 'selected: OpenCode' /tmp/i3.out
+          test -f "$HOME/.config/opencode/opencode.json"
+          echo "menu retry OK"
+
+      - name: --lang skips the language prompt
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome9"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export AICLI_CACHE_DIR="$RUNNER_TEMP/aicli-cache"
+          mkdir -p "$HOME"
+          printf '6\nhttps://gw.example.com/v1\nsk-lang\nm1\n' \
+            | ./ai-cli-setup.sh --lang zh --skip-install > /tmp/i4.out 2>&1
+          if grep -q 'Select language' /tmp/i4.out; then
+            echo "language prompt should be skipped with --lang"; exit 1
+          fi
+          grep -q '已选择：OpenCode' /tmp/i4.out
+          echo "--lang skip OK"
+
       - name: comma-separated tool list as positional args
         run: |
           export HOME="$RUNNER_TEMP/fakehome5"
