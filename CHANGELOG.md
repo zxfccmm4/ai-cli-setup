@@ -25,6 +25,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### ✨ Features
 
+- API key 改为显式掩码输入，实时显示前3+星号+后3 ([`1eb53c6`](https://github.com/zxfccmm4/ai-cli-setup/commit/1eb53c6e02d82182acbc8da1a04ab9ccfcf31768))
 - 运行先选语言（英文/中文），再选 agent（单选/多选/全部） ([`eb9646e`](https://github.com/zxfccmm4/ai-cli-setup/commit/eb9646e6aaf469266cf4a0382186a78e947aaba4))
 
 ### 🐛 Bug Fixes
