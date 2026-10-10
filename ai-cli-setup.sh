@@ -450,10 +450,13 @@ write_claude() {
   dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; f="$dir/settings.json"
   model="${MODEL:-}"
   [ -z "$model" ] && [ -n "$MODELS" ] && model="$(printf '%s' "$MODELS" | cut -d, -f1)"
+  # Claude Code 自己在 base 后拼 /v1/messages，必须写不带 /v1 的根地址
+  local base_clean="${BASE_URL%/}"
+  base_clean="${base_clean%/v1}"
   mkdir -p "$dir"
   backup_file "$f"
   tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-c.XXXXXX")"
-  if ! CLAUDE_FILE="$f" CLAUDE_OUT="$tmp" CLAUDE_BASE="$BASE_URL" CLAUDE_KEY="$API_KEY" CLAUDE_MODEL="$model" \
+  if ! CLAUDE_FILE="$f" CLAUDE_OUT="$tmp" CLAUDE_BASE="$base_clean" CLAUDE_KEY="$API_KEY" CLAUDE_MODEL="$model" \
   node -e '
     const fs=require("fs"),env=process.env;
     let cfg={};
