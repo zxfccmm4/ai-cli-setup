@@ -23,8 +23,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
+### 🐛 Bug Fixes
+
+- 修复 bash 3.2 下 $var 紧跟中文导致的 unbound variable ([`a394b98`](https://github.com/zxfccmm4/ai-cli-setup/commit/a394b981fe78ddfe6d810cbb712f58fce7d28671))
+
 ### 📝 Documentation
 
 - 补充 Release 产物说明（chmod +x 与独立使用） ([`611e6d6`](https://github.com/zxfccmm4/ai-cli-setup/commit/611e6d61ba1a914f3c401ec7b94ded8a2ff0af68))
+
+### 🔧 CI
+
+- 把多字节变量检查抽成 scripts/check-multibyte-vars.py ([`0192033`](https://github.com/zxfccmm4/ai-cli-setup/commit/0192033c19b83ef2d360d4efce4a834edf65d476))
 
 
