@@ -1,10 +1,21 @@
 # ai-cli-setup
 
+[![CI](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/ci.yml)
+[![Release](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/release.yml/badge.svg)](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/zxfccmm4/ai-cli-setup?sort=semver&color=2F81F7)](https://github.com/zxfccmm4/ai-cli-setup/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)](./README.md#兼容性)
+[![Shell](https://img.shields.io/badge/shell-bash%203.2%2B-4EAA25?logo=gnubash&logoColor=white)](./ai-cli-setup.sh)
+
 把 **zxfccmm4** 的 5 个 AI CLI 一键安装脚本（Pi / OmO / Claude Code / Codex / Grok Build）
 加上 **OpenCode**，整合成 **一个入口**：凭据只问一次，六个工具依次装好，最后给一份汇总。
 
 > 本脚本只做「编排」，**不修改任何上游代码**。前五个工具仍由它们自己的官方脚本安装；
 > `opencode` 上游没有对应仓库，由本脚本内置实现。
+
+📖 **详细文档：[`docs/`](./docs/)** —— [快速上手](./docs/quickstart.md) ·
+[配置详解](./docs/configuration.md) · [常见问题](./docs/troubleshooting.md) ·
+[开发与发布](./docs/development.md)
 
 ## 整合了哪些仓库
 

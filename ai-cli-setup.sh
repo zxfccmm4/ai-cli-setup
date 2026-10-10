@@ -437,7 +437,7 @@ ensure_tool() {
       if fetch_url "$url" "$dest"; then ok=1; break; fi
     done
     if [ "$ok" -ne 1 ]; then
-      err "$(lc "failed to download $file from $repo@$ref" "下载 $file 失败（$repo@$ref）")"
+      err "$(lc "failed to download $file from $repo@$ref" "下载 $file 失败（$repo@${ref}）")"
       return 1
     fi
     case "$file" in
@@ -629,7 +629,7 @@ run_opencode() {
       info "$(lc "npm install -g $OPENCODE_NPM_PKG" "npm install -g $OPENCODE_NPM_PKG")"
       npm install -g "$OPENCODE_NPM_PKG" >&2 || { err "$(lc 'npm install failed' 'npm 安装失败')"; return 1; }
     else
-      info "$(lc "running the official installer ($OPENCODE_INSTALL_URL)" "运行官方安装器（$OPENCODE_INSTALL_URL）")"
+      info "$(lc "running the official installer ($OPENCODE_INSTALL_URL)" "运行官方安装器（${OPENCODE_INSTALL_URL}）")"
       if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$OPENCODE_INSTALL_URL" | bash >&2 || rc=$?
       elif command -v wget >/dev/null 2>&1; then
@@ -811,7 +811,7 @@ run_tool() {
     return $?
   fi
 
-  dir="$(ensure_tool "$tool")" || { err "$(lc "$tool: download failed" "$tool：下载失败")"; return 1; }
+  dir="$(ensure_tool "$tool")" || { err "$(lc "$tool: download failed" "${tool}：下载失败")"; return 1; }
   entry="$dir/$(tool_entry "$tool")"
   [ -f "$entry" ] || { err "$(lc "missing entry: $entry" "缺少入口脚本：$entry")"; return 1; }
 

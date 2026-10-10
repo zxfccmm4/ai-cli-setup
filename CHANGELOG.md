@@ -23,5 +23,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
-_No notable changes._
+### 📝 Documentation
+
+- 补充 Release 产物说明（chmod +x 与独立使用） ([`611e6d6`](https://github.com/zxfccmm4/ai-cli-setup/commit/611e6d61ba1a914f3c401ec7b94ded8a2ff0af68))
+
 
