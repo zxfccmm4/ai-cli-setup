@@ -388,15 +388,17 @@ download_cmd() {
   else return 1; fi
 }
 
-# fetch_url <url> <dest>  -> 0/1
+# fetch_url <url> <dest> [bearer]  -> 0/1
 fetch_url() {
-  local url="$1" dest="$2" dc
+  local url="$1" dest="$2" bearer="${3:-}" dc
   dc="$(download_cmd)" || die "$(lc 'need curl or wget' '需要 curl 或 wget')"
   rm -f "$dest" 2>/dev/null || true
   if [ "$dc" = "curl" ]; then
-    curl -fsSL --connect-timeout 10 --max-time 180 -o "$dest" "$url" 2>/dev/null || return 1
+    # shellcheck disable=SC2086
+    curl -fsSL --connect-timeout 10 --max-time 180 ${bearer:+-H "Authorization: Bearer $bearer"} -o "$dest" "$url" 2>/dev/null || return 1
   else
-    wget -q --timeout=180 -O "$dest" "$url" 2>/dev/null || return 1
+    # shellcheck disable=SC2086
+    wget -q --timeout=180 ${bearer:+--header="Authorization: Bearer $bearer"} -O "$dest" "$url" 2>/dev/null || return 1
   fi
   [ -s "$dest" ] || return 1
   # 明确的 404 页面
@@ -503,8 +505,9 @@ for(const x of it){const v=typeof x==="string"?x:(x&&(x.id||x.name||x.slug));if(
   fi
 }
 
+# fetch_models <base_url> [api_key]：带上 Bearer 鉴权拉模型列表
 fetch_models() {
-  local base="$1" url ids
+  local base="$1" key="${2:-}" url ids
   [ -n "$base" ] || return 1
   base="${base%/}"
   case "$base" in
@@ -513,7 +516,7 @@ fetch_models() {
   esac
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-models.XXXXXX")" || return 1
-  if ! fetch_url "$url" "$tmp"; then rm -f "$tmp"; return 1; fi
+  if ! fetch_url "$url" "$tmp" "$key"; then rm -f "$tmp"; return 1; fi
   ids="$(json_model_ids < "$tmp" | head -200 | paste -sd, - 2>/dev/null || true)"
   rm -f "$tmp"
   [ -n "$ids" ] || return 1
@@ -542,7 +545,7 @@ collect_credentials() {
   if [ "$need_models" -eq 1 ] && [ -z "$MODELS" ]; then
     info "$(lc 'fetching model list from the endpoint...' '正在从端点获取模型列表...')"
     local fetched=""
-    fetched="$(fetch_models "$BASE_URL" || true)"
+    fetched="$(fetch_models "$BASE_URL" "$API_KEY" || true)"
     if [ -n "$fetched" ]; then
       info "$(lc "found models: $fetched" "发现模型：$fetched")"
       if [ "$NON_INTERACTIVE" -eq 1 ] || ! have_tty; then
