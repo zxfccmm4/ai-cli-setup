@@ -1,0 +1,119 @@
+# ai-cli-setup
+
+把 **zxfccmm4** 的 5 个 AI CLI 一键安装脚本整合成 **一个入口**：
+凭据只问一次，五个工具依次装好，最后给一份汇总。
+
+> 本脚本只做「编排」，**不修改任何上游代码**。每个工具仍然由它自己的官方脚本安装。
+
+## 整合了哪些仓库
+
+| 工具 | 上游仓库 | 装什么 | 配置文件 |
+|---|---|---|---|
+| `pi` | [zxfccmm4/pi-setup](https://github.com/zxfccmm4/pi-setup) | Pi（[pi.dev](https://pi.dev)） | `~/.pi/agent/{models.json,settings.json}` |
+| `omo` | [zxfccmm4/omo-setup](https://github.com/zxfccmm4/omo-setup) | OmO（[omo.dev](https://omo.dev)） | `~/.omo/agent/*`、`~/.omo/omo.jsonc` |
+| `claude` | [zxfccmm4/claude-code-linux-installer](https://github.com/zxfccmm4/claude-code-linux-installer) | Claude Code（Linux / WSL） | shell 配置或 `~/.claude/settings.json` |
+| `codex` | [zxfccmm4/deploy-codex](https://github.com/zxfccmm4/deploy-codex) | Codex CLI | `~/.codex/{config.toml,auth.json}` |
+| `grok` | [zxfccmm4/GrokBuild](https://github.com/zxfccmm4/GrokBuild) | Grok Build CLI | `~/.grok/config.toml` |
+
+## 快速开始
+
+```bash
+# 交互式：选工具 → 填 base_url / api_key → 开装
+./ai-cli-setup.sh
+
+# 全部装（凭据只问一次，模型列表自动从端点拉取）
+./ai-cli-setup.sh all
+
+# 远程一行（等价于下载后运行）
+curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-setup.sh | bash -s -- all
+```
+
+## 常用姿势
+
+```bash
+# 完全非交互
+./ai-cli-setup.sh all -y \
+  --base-url https://gw.example.com/v1 \
+  --api-key sk-xxxx \
+  --models gpt-5.6,gpt-5.5,claude-sonnet-4-5
+
+# 只装 Pi，指定模型
+./ai-cli-setup.sh pi -y --base-url https://gw.example.com/v1 \
+  --api-key sk-xxxx --models gpt-5,gpt-5-mini
+
+# Grok Build，开启服务端搜索（web_search / x_search）
+./ai-cli-setup.sh grok -y --base-url https://gw.example.com/v1 \
+  --api-key sk-xxxx --grok-search on --grok-alias MyGrok
+
+# 跳过某个工具 / 只跑一部分
+./ai-cli-setup.sh all --skip claude,codex
+./ai-cli-setup.sh all --only pi,grok
+
+# 只改配置、不重装 CLI
+./ai-cli-setup.sh all --skip-install -y --base-url ... --api-key ...
+
+# 先看看会做什么（不落盘）
+./ai-cli-setup.sh all -y --base-url ... --api-key ... --dry-run
+
+# 把参数透传给上游脚本本身
+./ai-cli-setup.sh codex -- --restore
+./ai-cli-setup.sh codex -- --uninstall
+
+# 环境体检 / 查看缓存 / 预下载
+./ai-cli-setup.sh doctor
+./ai-cli-setup.sh list
+./ai-cli-setup.sh download all
+
+# 可复现安装（锁定已验证提交，见 VERSIONS.md）
+./ai-cli-setup.sh all --pin
+```
+
+## 它到底做了什么
+
+1. **选工具**：`all` / 单个 / `--only` / `--skip` / 交互菜单。
+2. **问一次凭据**：`base_url` + `api_key`，自动请求 `<base_url>/v1/models`
+   拉模型列表让你挑（拉不到就手输 `--models`）。
+3. **翻译成各家变量**：把统一凭据映射为上游各自认识的环境变量 / 参数，例如
+
+   | 统一 | pi | omo | claude | codex | grok |
+   |---|---|---|---|---|---|
+   | `--base-url` | `PISETUP_BASE_URL` | `OMO_BASE_URL` | `CLAUDE_BASE_URL` | `CODEX_BASE_URL` | 写入 `config.toml` |
+   | `--api-key` | `PISETUP_API_KEY` | `OMO_API_KEY` | `CLAUDE_API_KEY` | `CODEX_API_KEY` | 写入 `config.toml` |
+   | `--models` | `PISETUP_MODELS` | `OMO_MODELS` | — | — | — |
+
+4. **取上游脚本**：优先用仓库内 `upstream/<repo>/` 的快照；
+   否则下载到 `~/.cache/ai-cli-setup/<repo>@<ref>/`
+   （raw.githubusercontent.com → 失败自动切 cdn.jsdelivr.net，带超时）。
+5. **逐个执行**：每个工具在独立子 shell 里跑，一个失败不影响下一个
+   （`--fail-fast` 可改为立即停止）。
+6. **汇总**：每个工具的成功/失败与耗时，最后给出退出码。
+
+## 与上游的差异
+
+| 上游 | 整合后的行为 |
+|---|---|
+| pi / omo / claude / codex | 原样调用其入口脚本，参数与体验完全一致 |
+| GrokBuild | **有 `--base-url` / `--api-key` 时**由本脚本直接生成 `~/.grok/config.toml`（原子写入、`chmod 600`、自动备份、支持 `--dry-run`）；**没有凭据时**（或 `--delegate`）仍走上游的交互向导 |
+
+## 安全
+
+- API Key 交互输入默认**不回显**，摘要里一律打码（`前4****后4`）。
+- 生成的配置文件权限 `600`，写入前自动 `*.bak.<时间戳>` 备份。
+- `--dry-run` 只打印计划，不写文件、不装软件。
+- 上游脚本会以你的身份执行；`--pin` + `VERSIONS.md` 可以固定到已审阅的提交。
+
+## 环境变量
+
+`AICLI_BASE_URL` `AICLI_API_KEY` `AICLI_MODELS` `AICLI_MODEL` `AICLI_LANG`
+`AICLI_REF` `AICLI_CACHE_DIR` `AICLI_RAW_HOST` `AICLI_OWNER`
+
+## 兼容性
+
+- macOS / Linux，bash 3.2+（无需 `brew install bash`）
+- 需要 `curl` 或 `wget`；配置写入阶段需要 `node` 或 `bun`
+  （claude 的 `--config-mode settings` 与 codex 的 TOML 校验额外需要 `python3`）
+- Linux 上安装 Codex 需要 `root`/`sudo`
+
+## 许可
+
+本脚本 MIT。五个上游仓库均为 MIT，版权归各自作者（zxfccmm4）所有。

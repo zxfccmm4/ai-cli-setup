@@ -1,0 +1,12 @@
+# 缓存 / 临时文件
+*.bak
+*.bak.*
+*.tmp
+.DS_Store
+node_modules/
+
+# 本地凭据（切勿提交）
+.env
+.env.*
+*.local
+secrets.*
