@@ -76,9 +76,10 @@ jobs:
           ./ai-cli-setup.sh download --only pi,omo,codex,grok
           ./ai-cli-setup.sh list
 
-      - name: dry-run opencode config write (isolated HOME)
+      - name: opencode config write (isolated HOME)
         run: |
           export HOME="$RUNNER_TEMP/fakehome"
+          export XDG_CONFIG_HOME="$HOME/.config"   # runners preset XDG_CONFIG_HOME; keep it inside our fake HOME
           mkdir -p "$HOME"
           ./ai-cli-setup.sh opencode -y --skip-install \
             --base-url https://gw.example.com/v1 \
@@ -104,6 +105,7 @@ jobs:
       - name: opencode.json merge preserves existing keys
         run: |
           export HOME="$RUNNER_TEMP/fakehome2"
+          export XDG_CONFIG_HOME="$HOME/.config"
           mkdir -p "$HOME/.config/opencode"
           cat > "$HOME/.config/opencode/opencode.json" <<'JSON'
           {
@@ -129,6 +131,7 @@ jobs:
       - name: dry-run grok config (isolated HOME)
         run: |
           export HOME="$RUNNER_TEMP/fakehome3"
+          export XDG_CONFIG_HOME="$HOME/.config"
           mkdir -p "$HOME"
           ./ai-cli-setup.sh grok -y --skip-install \
             --base-url https://gw.example.com/v1 \
@@ -144,6 +147,7 @@ jobs:
       - name: --dry-run never writes anything
         run: |
           export HOME="$RUNNER_TEMP/fakehome4"
+          export XDG_CONFIG_HOME="$HOME/.config"
           mkdir -p "$HOME"
           ./ai-cli-setup.sh opencode,grok -y --dry-run --skip-install \
             --base-url https://gw.example.com/v1 --api-key sk-test-123456 --models a,b
@@ -168,6 +172,7 @@ jobs:
       - name: comma-separated tool list as positional args
         run: |
           export HOME="$RUNNER_TEMP/fakehome5"
+          export XDG_CONFIG_HOME="$HOME/.config"
           mkdir -p "$HOME"
           ./ai-cli-setup.sh opencode,grok -y --skip-install --dry-run \
             --base-url https://gw.example.com/v1 --api-key {{SECRET_nyfdkmg7}} --models a,b
