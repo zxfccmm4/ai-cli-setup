@@ -23,12 +23,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
+### ✨ Features
+
+- 运行先选语言（英文/中文），再选 agent（单选/多选/全部） ([`eb9646e`](https://github.com/zxfccmm4/ai-cli-setup/commit/eb9646e6aaf469266cf4a0382186a78e947aaba4))
+
 ### 🐛 Bug Fixes
 
 - 修复 bash 3.2 下 $var 紧跟中文导致的 unbound variable ([`a394b98`](https://github.com/zxfccmm4/ai-cli-setup/commit/a394b981fe78ddfe6d810cbb712f58fce7d28671))
 
 ### 📝 Documentation
 
+- 重构 README ([`d4ad8be`](https://github.com/zxfccmm4/ai-cli-setup/commit/d4ad8be4cd5b25ed06337a1332ff3b50e14256a5))
 - 补充 Release 产物说明（chmod +x 与独立使用） ([`611e6d6`](https://github.com/zxfccmm4/ai-cli-setup/commit/611e6d61ba1a914f3c401ec7b94ded8a2ff0af68))
 
 ### 🔧 CI
