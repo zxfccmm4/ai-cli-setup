@@ -32,6 +32,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 🐛 Bug Fixes
 
+- BusyBox tr 不认字符类导致模型名损坏 + PATH 提示增强 ([`ad35eb6`](https://github.com/zxfccmm4/ai-cli-setup/commit/ad35eb62ddfdf475e87a93dd6346cefb4b9c5f08))
 - 兼容无 node/npm/paste 的精简系统（OpenWrt/BusyBox） ([`82cbe80`](https://github.com/zxfccmm4/ai-cli-setup/commit/82cbe8013483299af05f222836bb38927a55533c))
 - 安装后清 bash 命令缓存并打印二进制真实位置 ([`24b199f`](https://github.com/zxfccmm4/ai-cli-setup/commit/24b199f105ed6cd91ae1909425c6dab8b2dea949))
 - Claude Code 的 ANTHROPIC_BASE_URL 剥掉尾部 /v1 ([`ba33bef`](https://github.com/zxfccmm4/ai-cli-setup/commit/ba33beff7bdcc5c0ed49640cebd6cf6a36554cc1))
