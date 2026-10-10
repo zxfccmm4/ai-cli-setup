@@ -32,6 +32,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 🐛 Bug Fixes
 
+- 默认模型必填 + set -e 函数返回值陷阱 ([`02326a6`](https://github.com/zxfccmm4/ai-cli-setup/commit/02326a687f0d7868eb0ecc897fe72e1efa2190e0))
 - OpenWrt/musl 三连修——node 拒装、claude 纯 bash 配置、PATH 写 profile.d ([`f49d7eb`](https://github.com/zxfccmm4/ai-cli-setup/commit/f49d7eba2f4f361c049bcb0aa2d324a0434b026b))
 - musl 系统（OpenWrt/iStoreOS）安装 opencode 官方 musl 变体 ([`cd3feb3`](https://github.com/zxfccmm4/ai-cli-setup/commit/cd3feb34f9c73d8c25e417f1b23a5168ddcfdb44))
 - BusyBox tr 不认字符类导致模型名损坏 + PATH 提示增强 ([`ad35eb6`](https://github.com/zxfccmm4/ai-cli-setup/commit/ad35eb62ddfdf475e87a93dd6346cefb4b9c5f08))
