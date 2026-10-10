@@ -135,11 +135,57 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 `.github/workflows/ci.yml` 在每次 push / PR 上跑：
 
 - 所有自有脚本 `bash -n` + `shellcheck -S warning`（上游快照只做信息性检查）
+- `CHANGELOG.md` 必须是最新的（跑 `./scripts/changelog.sh --all --update CHANGELOG.md` 后无 diff），
+  并验证生成器幂等
 - Ubuntu + macOS（含系统 bash 3.2）双平台冒烟测试
 - `list` / `doctor` / `download` 离线快照解析
 - 在隔离 `$HOME` 里真写一次 `opencode.json` 与 `~/.grok/config.toml`，
   校验内容、`600` 权限、备份文件，并验证 JSON 合并不丢已有键
 - 验证 `--dry-run` 不落盘、`-y` 缺凭据会报错、未知工具被拒绝、管道模式可用
+
+## 发布 / Release
+
+`.github/workflows/release.yml` 在推送 `v*.*.*` tag 时触发：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+它会先跑一遍完整校验，再构建并上传这些产物到 GitHub Release：
+
+| 产物 | 说明 |
+|---|---|
+| `ai-cli-setup.sh` | 统一入口脚本（单文件） |
+| `changelog.sh` | CHANGELOG 生成器 |
+| `SHA256SUMS` | 校验和 |
+| `VERSION.txt` | 版本 / 提交 / 上游快照信息 |
+| `CHANGELOG.md` `README.md` `LICENSE` | 随附文档 |
+
+Release notes 自动从 `CHANGELOG.md` 摘出对应版本那一节。
+也可在 Actions 页面手动 `workflow_dispatch` 只做构建校验（不发布）。
+
+校验下载的产物：
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+## CHANGELOG
+
+`CHANGELOG.md` 由 `scripts/changelog.sh` 从 git 历史生成（约定式提交），
+遵循 [Keep a Changelog](https://keepachangelog.com/)：
+
+```bash
+./scripts/changelog.sh                                    # 打印 [Unreleased]
+./scripts/changelog.sh --all                              # 按 tag 重建整份
+./scripts/changelog.sh --all --update CHANGELOG.md        # 写回文件（幂等）
+./scripts/changelog.sh --version v1.1.0 --date 2026-01-01 --update CHANGELOG.md
+./scripts/changelog.sh --no-links                         # 不生成提交链接
+```
+
+提交信息建议用 `feat:` / `fix:` / `perf:` / `refactor:` / `docs:` / `test:` /
+`ci:` / `build:` / `chore:`，脚本会按类型分桶；不符合约定的归到 `Other`。
 
 ## 许可
 

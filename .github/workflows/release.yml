@@ -1,0 +1,208 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本（如 v1.0.0）。留空则只做一次构建校验。'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. 先跑一遍完整校验，不过就不发
+  # ---------------------------------------------------------------------------
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Bash syntax
+        run: |
+          fail=0
+          for f in ai-cli-setup.sh scripts/changelog.sh; do
+            printf 'checking %s ... ' "$f"
+            if bash -n "$f"; then echo ok; else echo FAIL; fail=1; fi
+          done
+          exit $fail
+
+      - name: ShellCheck
+        run: shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
+
+      - name: Smoke test
+        run: |
+          ./ai-cli-setup.sh --version
+          ./ai-cli-setup.sh list >/dev/null
+          ./ai-cli-setup.sh doctor >/dev/null
+          ./ai-cli-setup.sh opencode -y --dry-run --skip-install \
+            --base-url https://gw.example.com/v1 --api-key sk-release-smoke --models a,b
+
+  # ---------------------------------------------------------------------------
+  # 2. 构建产物：单文件脚本 + SHA256
+  # ---------------------------------------------------------------------------
+  build:
+    name: build artifacts
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME}"
+          else
+            v="v$(date +%Y.%m.%d)-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "resolved version: $v"
+
+      - name: Stage artifacts
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          mkdir -p dist
+          cp ai-cli-setup.sh "dist/ai-cli-setup.sh"
+          chmod +x "dist/ai-cli-setup.sh"
+          cp scripts/changelog.sh "dist/changelog.sh"
+          chmod +x "dist/changelog.sh"
+          cp README.md dist/README.md
+          cp LICENSE dist/LICENSE
+
+          # 生成 CHANGELOG（按 tag 重建；没有 tag 就只出 Unreleased）
+          # 必须在仓库根目录运行（需要 git 历史），输出到 dist/
+          ./scripts/changelog.sh --all --update dist/CHANGELOG.md
+
+          # 版本信息
+          {
+            echo "version: ${v}"
+            echo "commit: $(git rev-parse HEAD)"
+            echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "bash: $(bash --version | head -1)"
+            echo
+            echo "--- ai-cli-setup.sh ---"
+            ./ai-cli-setup.sh --version
+            echo
+            echo "--- upstream snapshot ---"
+            sed -n '1,60p' VERSIONS.md 2>/dev/null || true
+          } > "dist/VERSION.txt"
+
+          # 校验和（用文件名，方便 shasum -c）
+          ( cd dist && sha256sum ai-cli-setup.sh changelog.sh README.md LICENSE CHANGELOG.md > SHA256SUMS )
+          cat dist/SHA256SUMS
+
+      - name: Verify checksums
+        run: cd dist && sha256sum -c SHA256SUMS
+
+      - name: Verify the standalone script runs
+        run: |
+          cd dist
+          bash -n ai-cli-setup.sh
+          ./ai-cli-setup.sh --version
+          ./ai-cli-setup.sh list >/dev/null
+          echo "standalone script OK"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ steps.ver.outputs.version }}
+          path: dist/*
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 3. 发布 Release（只在 tag push 时）
+  # ---------------------------------------------------------------------------
+  release:
+    name: publish release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Build release notes
+        run: |
+          v="${{ needs.build.outputs.version }}"
+          {
+            echo "## 一键安装 / One-liner"
+            echo
+            echo '```bash'
+            echo "# 下载并运行（自动从 raw 拉取配套文件）"
+            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/ai-cli-setup.sh | bash -s -- all"
+            echo '```'
+            echo
+            echo "### 产物 / Assets"
+            echo
+            echo '| 文件 | 说明 |'
+            echo '|---|---|'
+            echo '| `ai-cli-setup.sh` | 统一入口脚本（单文件） |'
+            echo '| `changelog.sh` | CHANGELOG 生成器 |'
+            echo '| `SHA256SUMS` | 校验和（`sha256sum -c SHA256SUMS`） |'
+            echo '| `VERSION.txt` | 版本 / 提交 / 上游快照信息 |'
+            echo
+            echo "### 校验 / Verify"
+            echo
+            echo '```bash'
+            echo "sha256sum -c SHA256SUMS"
+            echo '```'
+            echo
+            echo "---"
+            echo
+            # 从生成的 CHANGELOG 里摘出本版本那一节
+            awk -v v="$v" '
+              $0 ~ "^## \\[" v "\\]" { on=1; print; next }
+              on && /^## \[/ { exit }
+              on { print }
+            ' dist/CHANGELOG.md
+          } > release-notes.md
+
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+
+      - name: Create / update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.build.outputs.version }}"
+          if gh release view "$v" >/dev/null 2>&1; then
+            gh release edit "$v" --notes-file release-notes.md
+            gh release upload "$v" dist/* --clobber
+          else
+            gh release create "$v" \
+              --title "$v" \
+              --notes-file release-notes.md \
+              dist/*
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "### Released \`${{ needs.build.outputs.version }}\`"
+            echo
+            echo "https://github.com/${{ github.repository }}/releases/tag/${{ needs.build.outputs.version }}"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

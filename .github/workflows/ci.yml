@@ -39,7 +39,30 @@ jobs:
           done < <(git ls-files 'upstream/*.sh')
 
       - name: ShellCheck (our script only)
-        run: shellcheck -S warning ai-cli-setup.sh
+        run: shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
+
+      - name: CHANGELOG is up to date
+        run: |
+          cp CHANGELOG.md /tmp/changelog.before
+          ./scripts/changelog.sh --all --update CHANGELOG.md
+          if ! diff -u /tmp/changelog.before CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is stale. Run: ./scripts/changelog.sh --all --update CHANGELOG.md"
+            exit 1
+          fi
+          echo "CHANGELOG.md is up to date"
+
+      - name: changelog.sh is idempotent
+        run: |
+          rm -f /tmp/CL.md
+          ./scripts/changelog.sh --update /tmp/CL.md >/dev/null
+          cp /tmp/CL.md /tmp/CL.first
+          ./scripts/changelog.sh --update /tmp/CL.md >/dev/null
+          diff /tmp/CL.first /tmp/CL.md
+          ./scripts/changelog.sh --version v9.9.9 --date 2026-01-01 --update /tmp/CL.md >/dev/null
+          cp /tmp/CL.md /tmp/CL.second
+          ./scripts/changelog.sh --version v9.9.9 --date 2026-01-01 --update /tmp/CL.md >/dev/null
+          diff /tmp/CL.second /tmp/CL.md
+          echo "changelog.sh is idempotent"
 
       - name: ShellCheck (upstream snapshots, informational)
         continue-on-error: true
