@@ -31,6 +31,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 🐛 Bug Fixes
 
+- 安装后清 bash 命令缓存并打印二进制真实位置 ([`24b199f`](https://github.com/zxfccmm4/ai-cli-setup/commit/24b199f105ed6cd91ae1909425c6dab8b2dea949))
 - Claude Code 的 ANTHROPIC_BASE_URL 剥掉尾部 /v1 ([`ba33bef`](https://github.com/zxfccmm4/ai-cli-setup/commit/ba33beff7bdcc5c0ed49640cebd6cf6a36554cc1))
 - pi 安装改为 npm 优先——官方 install.sh 会问 Start pi now? 且默认 Y ([`a54416b`](https://github.com/zxfccmm4/ai-cli-setup/commit/a54416bea9f692a0a403c77d27d2f5ba45c80cca))
 - 凭据齐全时 Codex 强制非交互，非 sk- key 不再卡确认提问 ([`9c63445`](https://github.com/zxfccmm4/ai-cli-setup/commit/9c63445ddf70a7db42bede3c59121e92a8d4db57))
