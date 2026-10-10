@@ -1,26 +1,46 @@
 <div align="center">
 
-# ai-cli-setup
+# ⚡ ai-cli-setup
 
-**一个脚本，装好并配置你所有的 AI CLI agent**
+**一个脚本，装好并统一配置你所有的 AI CLI Agent**
 
-选 agent → 自动安装 → 统一配置，凭据只问一次
+选 Agent ➔ 官方渠道自动安装 ➔ 统一配置 · 凭据只问一次
 
-[![CI](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/ci.yml)
-[![Release](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/release.yml/badge.svg)](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/release.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/zxfccmm4/ai-cli-setup/ci.yml?branch=main&label=CI&logo=github&style=flat-square)](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/zxfccmm4/ai-cli-setup?label=Release&color=blue&style=flat-square)](https://github.com/zxfccmm4/ai-cli-setup/releases)
+[![Bash](https://img.shields.io/badge/bash-3.2%2B-green.svg?style=flat-square&logo=gnu-bash)](https://www.gnu.org/software/bash/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20musl-lightgrey.svg?style=flat-square)](https://github.com/zxfccmm4/ai-cli-setup)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 
-</div>
-
----
+<br />
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-setup.sh | bash
 ```
 
-Pi、OmO、Claude Code、Codex、Grok Build、OpenCode 六个 agent，各走各的官方渠道安装，配置由本脚本直接生成——不包装任何第三方安装脚本，一条命令管到底。
+一条命令搞定 **Pi**、**OmO**、**Claude Code**、**Codex**、**Grok Build**、**OpenCode** 6 大主流 CLI Agent。<br />
+各走官方渠道安装，原生配置自动生成，无第三方包装脚本，纯 Bash 实现。
 
-## 长什么样
+<br />
+</div>
+
+---
+
+## ✨ 核心特性
+
+- 🎯 **一键统管 6 大主流 Agent**：支持 Pi、OmO、Claude Code、Codex、Grok Build、OpenCode，按需多选或全选安装。
+- 🔑 **凭据只问一次**：Base URL 与 API Key 统一采集，一键批量分发写入各 Agent 的原生配置格式（JSON / TOML）。
+- 📡 **智能拉取模型**：配置时自动请求网关端点拉取模型列表，一键全选或交互式挑选。
+- 🔒 **银行级安全防护**：
+  - **交互动态掩码**：API Key 实时渲染为 `sk-******xyz`，粘贴及输入均不闪现明文。
+  - **严格权限隔离**：所有生成的敏感配置文件权限均强制设为 `600`。
+  - **零风险回退**：覆盖前自动创建带时间戳的备份副本；提供 `--dry-run` 预览落盘计划。
+  - **OpenCode V2 机制保护**：Key 支持通过 `{env:}` 环境变量引用导出，不直接硬编码在配置文件中。
+- 🐧 **极致兼容**：全面适配 Linux (glibc)、macOS (arm64/x86_64) 及 OpenWrt / Alpine 等 musl 软路由架构。
+
+---
+
+## 🖥 终端交互效果
 
 ```text
 $ curl -fsSL .../ai-cli-setup.sh | bash
@@ -49,7 +69,7 @@ choose / 请选择 2
 
 ==> 凭据（只问一次，所有 agent 共用）
 接口 base URL: https://gw.example.com/v1
-API key: sk-**************xyz        ← 显式掩码，只显示前 3 后 3
+API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 ℹ  发现 152 个模型 → 留空回车全选，或手输需要的几个
 默认模型 id: group/auto-claude-sonnet-5-5
 
@@ -72,92 +92,130 @@ API key: sk-**************xyz        ← 显式掩码，只显示前 3 后 3
 ℹ  配置成功 6 个，失败 0 个
 ```
 
-## 支持的 agent
+---
 
-| agent | 安装渠道 | 配置文件 | 备注 |
-|---|---|---|---|
-| Pi | `pi.dev/install.sh`（回退 npm） | `~/.pi/agent/{models,settings}.json` | |
-| OmO | `get.omo.dev`（回退 npm） | `~/.omo/agent/{models,settings}.json` | root 自动确认 |
-| Claude Code | `claude.ai/install.sh`（回退 npm） | `~/.claude/settings.json` | 安装仅 Linux/WSL |
-| Codex | npm `@openai/codex` | `~/.codex/{config.toml,auth.json}` | |
-| Grok Build | `x.ai/cli/install.sh` | `~/.grok/config.toml` | |
-| OpenCode | `opencode.ai/install`（回退 npm） | `~/.config/opencode/opencode.json` | 自动识别 V1/V2 格式，合并写入 |
+## 📦 支持的 Agent 矩阵
 
-## 三件事做完
+| Agent | 官方安装渠道 | 配置文件位置 | 配置格式 | 特别说明 |
+| :--- | :--- | :--- | :---: | :--- |
+| **Pi** | `pi.dev/install.sh`（回退 npm） | `~/.pi/agent/{models,settings}.json` | `JSON` | 自动配置 Provider 与默认模型 |
+| **OmO** | `get.omo.dev`（回退 npm） | `~/.omo/agent/{models,settings}.json` | `JSON` | root 用户下自动授权执行 |
+| **Claude Code** | `claude.ai/install.sh`（回退 npm） | `~/.claude/settings.json` | `JSON` | 安装仅支持 Linux/WSL；macOS 仅写配置 |
+| **Codex CLI** | npm `@openai/codex` | `~/.codex/{config.toml,auth.json}` | `TOML` / `JSON` | 自动写入模型映射与 Base URL |
+| **Grok Build** | `x.ai/cli/install.sh` | `~/.grok/config.toml` | `TOML` | 自动配置模型别名与上下文窗口 |
+| **OpenCode** | `opencode.ai/install`（回退 npm） | `~/.config/opencode/opencode.json` | `JSON` | 自动识别 V1 / V2 规范并无损合并 |
 
-1. **选**：语言 + agent（单选、多选、全部，无效输入重试 3 次）
-2. **装**：每个 agent 走官方渠道；已装跳过；装完校验二进制真实可执行
-3. **配**：凭据问一次，掩码输入；模型列表带 key 自动拉取；批量写入原生配置
+---
 
-**安全设计**：API key 掩码输入（前 3 + 星号 + 后 3，粘贴不闪明文）；配置文件权限 `600`，写入前自动时间戳备份；`--dry-run` 不落盘；OpenCode V2 的 key 只写 `{env:}` 引用、不落配置文件。
+## 🌍 系统与环境支持
 
-## 平台支持
+| 环境平台 | 支持情况 | 说明 |
+| :--- | :---: | :--- |
+| **Linux (glibc)** | ✅ **全部支持** | Ubuntu, Debian, CentOS, Fedora, Arch 等全特性支持 |
+| **macOS** | ✅ **全部支持** | 原生兼容；Claude Code 跳过安装阶段仅写配置（上游官方限制） |
+| **OpenWrt / musl 软路由** | ⚡ **深度优化** | 自动识别 musl 架构并安装官方 musl 构建；Pi/OmO/Codex 依赖 Node 建议在容器运行 |
 
-| 环境 | 支持情况 |
-|---|---|
-| Linux（glibc） | 六个 agent 全部支持 |
-| macOS | Claude Code 跳过安装仅写配置（上游限制），其余全部支持 |
-| OpenWrt / musl 软路由 | Claude Code、OpenCode 实测可用（OpenCode 自动装官方 musl 构建）；Pi / OmO / Codex 依赖 Node.js，建议在 Debian 容器内运行 |
+---
 
-## 命令速查
+## 🚀 常用命令速查
+
+### 1. 交互与常规使用
 
 ```bash
-./ai-cli-setup.sh                              # 交互向导
-./ai-cli-setup.sh pi,opencode                  # 指定 agent
+# 引导式交互模式（首选，含语言选择）
+./ai-cli-setup.sh
+
+# 指定仅安装并配置某几个 agent
+./ai-cli-setup.sh pi,opencode
+```
+
+### 2. 自动化部署与 CI
+
+```bash
+# 完全非交互静默安装配置全部 agent
 ./ai-cli-setup.sh all -y \
   --base-url https://gw.example.com/v1 \
   --api-key sk-xxxx \
   --models gpt-5.6,glm-5.3 \
-  --model gpt-5.6                              # 完全非交互
-./ai-cli-setup.sh claude --skip-install ...    # 只刷配置不重装
-./ai-cli-setup.sh all --dry-run ...            # 只看计划
-./ai-cli-setup.sh list                         # 已装 agent 一览
-./ai-cli-setup.sh doctor                       # 环境体检
+  --model gpt-5.6
+
+# 仅更新配置文件，跳过二进制下载与安装
+./ai-cli-setup.sh claude --skip-install
+
+# 仅预览执行计划，不落盘、不修改任何现有文件
+./ai-cli-setup.sh all --dry-run
 ```
 
-## 常见问题
+### 3. 环境与诊断工具
+
+```bash
+# 查看本地已安装的 agent 状态及路径
+./ai-cli-setup.sh list
+
+# 运行全面的本地环境体检（探测依赖命令、路径、配置文件完整性）
+./ai-cli-setup.sh doctor
+```
+
+---
+
+## ❓ 常见问题 (FAQ)
 
 <details>
-<summary><b>看起来卡住了？</b></summary>
+<summary><b>输入 API Key 时界面好像卡住了？</b></summary>
+<br />
 
-大概率在等你回答。API key 输入时只显示掩码（`sk-***xyz`），你敲的字符不会原样出现，输完回车即可。模型列表一步留空回车等于全选。
+这是正常的安全保护机制。为了防止旁人偷窥或录屏泄露，输入密钥时终端启用掩码模式，只会显示 `sk-******xyz`。按键与粘贴均不会回显明文字符，输入完成后直接按回车即可。
 </details>
 
 <details>
-<summary><b>Claude Code 界面正常，发消息却报模型错误？</b></summary>
+<summary><b>Claude Code 界面正常，但对话时报错提示模型不存在？</b></summary>
+<br />
 
-默认模型留空时 Claude Code 会用官方模型名（如 `claude-opus-5-5`），自定义网关不认识这个名字。重跑配置，默认模型必须填网关上真实存在的 id。
+当默认模型留空时，Claude Code 会尝试使用官方模型名（例如 `claude-opus-5-5`），部分第三方网关无法识别此名称。请使用 `--model <真实模型ID>` 重新运行脚本配置。
 </details>
 
 <details>
-<summary><b>软路由（OpenWrt）上 opencode 报 not found？</b></summary>
+<summary><b>软路由 (OpenWrt) 上运行 OpenCode 报 <code>not found</code>？</b></summary>
+<br />
 
-musl 系统装了 glibc 二进制时 exec 会失败，报错恰好是 "not found"。本脚本会自动检测 musl 并安装官方 musl 构建；若 PATH 未生效，先执行 `export PATH="$HOME/.opencode/bin:$PATH"`。
+musl 系统若误安装了 glibc 预编译二进制，在动态链接器缺失时系统会报错 `not found`。本脚本内置了对 musl 架构的精准识别并拉取官方 musl 构建。若命令无法直接调用，请在新开终端执行 `export PATH="$HOME/.opencode/bin:$PATH"`。
 </details>
 
 <details>
-<summary><b>重跑会覆盖已有配置吗？</b></summary>
+<summary><b>重复执行脚本会冲掉现有的配置或插件吗？</b></summary>
+<br />
 
-写前自动备份（`*.bak.<时间戳>`）。OpenCode 是合并写入，已有的 plugin、其他 provider 不会丢；Claude Code 无 node 时同样做键级合并。
+不会。写入新配置前会自动对原文件建立时间戳备份（`*.bak.<timestamp>`）。对于 OpenCode 和 Claude Code，脚本会在 JSON 键级上做增量合并，已有插件及其它 Provider 配置不会丢失。
 </details>
 
-## 环境变量 / CI / Release
+---
 
-<details>
-<summary><b>环境变量</b></summary>
+## ⚙️ 环境变量速查
 
-`AICLI_BASE_URL` `AICLI_API_KEY` `AICLI_MODELS` `AICLI_MODEL` `AICLI_LANG`（en/zh）
-`AICLI_ASSUME_TTY`（1 = 把 stdin 当交互输入，容器 / CI 用）
-`AICLI_OPENCODE_V2`（1 = 强制写 OpenCode V2 格式）
-`GROK_ALIAS` `GROK_CONTEXT_WINDOW` `CODEX_WIRE_API`（responses/chat）
-</details>
+| 环境变量 | 作用说明 | 默认值 / 选项 |
+| :--- | :--- | :--- |
+| `AICLI_BASE_URL` | 网关 API Base URL（例如 `https://api.example.com/v1`） | - |
+| `AICLI_API_KEY` | 网关 API 密钥 | - |
+| `AICLI_MODELS` | 注册的模型列表（逗号分隔） | 自动从端点拉取 |
+| `AICLI_MODEL` | 默认模型 ID | 模型列表首项 |
+| `AICLI_LANG` | 界面语言 | `zh` 或 `en` |
+| `AICLI_ASSUME_TTY` | 将标准输入视作 TTY 终端（容器 / CI 环境使用） | `0` / `1` |
+| `AICLI_OPENCODE_V2` | 强制采用 OpenCode V2 格式（使用 `{env:}` 凭据引用） | 自动探测 / `1` |
+| `GROK_ALIAS` | Grok CLI 默认模型别名 | `main` |
+| `GROK_CONTEXT_WINDOW`| Grok CLI 上下文窗口尺寸 | `500000` |
+| `CODEX_WIRE_API` | Codex CLI 协议类型 | `responses` / `chat` |
 
-<details>
-<summary><b>CI / Release / CHANGELOG</b></summary>
+---
 
-CI 双平台（Ubuntu / macOS 含 bash 3.2）跑语法、shellcheck、交互流程、隔离 HOME 真写配置校验内容与权限、dry-run、管道模式。推送 `v*.*.*` tag 触发 Release。`CHANGELOG.md` 由 `scripts/changelog.sh` 从 git 历史生成。
-</details>
+## 📚 详细文档
 
-## 许可
+- 📘 [快速上手指南 (Quick Start)](docs/quickstart.md)
+- ⚙️ [配置与参数详解 (Configuration)](docs/configuration.md)
+- 🛠 [疑难问题与排错 (Troubleshooting)](docs/troubleshooting.md)
+- 💻 [本地开发与发版规范 (Development)](docs/development.md)
 
-MIT
+---
+
+## 📄 开源许可证
+
+本项目基于 [MIT License](LICENSE) 开源。

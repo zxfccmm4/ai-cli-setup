@@ -110,12 +110,22 @@ read_line() {
   printf -v "$__var" '%s' "$__ans"
 }
 
+repeat_char() {
+  local ch="$1" n="${2:-0}"
+  [ "$n" -gt 0 ] || return 0
+  local s=""
+  printf -v s '%*s' "$n" ''
+  printf '%s' "${s// /$ch}"
+}
+
 secret_mask() {
   local s="${1:-}"
-  if [ -z "$s" ] || [ ${#s} -le 6 ]; then
-    printf '%s' "$(printf '%.*s' ${#s} '********')"
+  local len="${#s}"
+  if [ -z "$s" ] || [ "$len" -le 6 ]; then
+    repeat_char '*' "$len"
   else
-    printf '%s%s%s' "${s:0:3}" "$(printf '%.*s' $((${#s} - 6)) '********************************************************')" "${s: -3}"
+    local mid=$((len - 6))
+    printf '%s%s%s' "${s:0:3}" "$(repeat_char '*' "$mid")" "${s: -3}"
   fi
 }
 
@@ -144,23 +154,26 @@ read_secret() {
       $'\x7f'|$'\x08')
         if [ -n "$__buf" ]; then
           __buf="${__buf%?}"; __m="$(secret_mask "$__buf")"
-          printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+          [ "$__prev" -gt 0 ] && repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
           printf '%s' "$__m" > "$__out" 2>/dev/null || true
           local __pad=$((__prev - ${#__m}))
-          [ $__pad -gt 0 ] && printf '%*s' $__pad '' > "$__out" 2>/dev/null
+          if [ "$__pad" -gt 0 ]; then
+            printf '%*s' "$__pad" '' > "$__out" 2>/dev/null || true
+            repeat_char $'\b' "$__pad" > "$__out" 2>/dev/null || true
+          fi
           __prev=${#__m}
         fi ;;
       $'\x15')
         if [ "$__prev" -gt 0 ]; then
-          printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+          repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
           printf '%*s' "$__prev" '' > "$__out" 2>/dev/null || true
-          printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+          repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
         fi
         __buf=""; __prev=0 ;;
       $'\x04') break ;;
       *)
         __buf="${__buf}${__c}"; __m="$(secret_mask "$__buf")"
-        printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+        [ "$__prev" -gt 0 ] && repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
         printf '%s' "$__m" > "$__out" 2>/dev/null || true
         __prev=${#__m} ;;
     esac
@@ -195,6 +208,22 @@ esac
 is_root() { [ "$(id -u)" -eq 0 ]; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+detect_shellrc() {
+  case "${SHELL:-}" in
+    *zsh*) [ -f "$HOME/.zshrc" ] && { printf '%s' "$HOME/.zshrc"; return 0; } ;;
+    *bash*) [ -f "$HOME/.bashrc" ] && { printf '%s' "$HOME/.bashrc"; return 0; } ;;
+  esac
+  if [ -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.bashrc" ]; then
+    printf '%s' "$HOME/.zshrc"
+  elif [ -f "$HOME/.bashrc" ]; then
+    printf '%s' "$HOME/.bashrc"
+  elif [ -f "$HOME/.zshrc" ]; then
+    printf '%s' "$HOME/.zshrc"
+  else
+    printf '%s' "$HOME/.bashrc"
+  fi
+}
 
 # ============================================================
 # 6. agent 清单
@@ -359,7 +388,7 @@ install_opencode() {
 # npm 重装会把 bin 换位置，bash 缓存的旧路径（如 /usr/local/bin/codex）导致
 # "No such file or directory"，hash -r 后用真实路径再探测。
 post_install_check() {
-  local a="$1" bin path cand bindir
+  local a="$1" bin path bindir
   bin="$(agent_bin "$a")"
   hash -r 2>/dev/null || true
   if path="$(command -v "$bin" 2>/dev/null)" && [ -x "$path" ]; then
@@ -372,7 +401,7 @@ post_install_check() {
       ok "$(agent_title "$a") -> $bindir/$bin"
       # 确保以后每个 shell 都能找到。OpenWrt/ash 不读 .bashrc：优先写 /etc/profile.d/
       local sub="${bindir#"$HOME"/}"
-      local line='export PATH="$HOME/'$sub':$PATH"'
+      local line="export PATH=\"\$HOME/$sub:\$PATH\""
 
       if [ -d /etc/profile.d ] && [ -w /etc/profile.d ]; then
         local prof="/etc/profile.d/ai-cli-setup.sh"
@@ -381,8 +410,7 @@ post_install_check() {
           info "$(lc "added PATH to $prof" "已把 PATH 写入 $prof")"
         fi
       else
-        local rcfile=""
-        for cand in "$HOME/.bashrc" "$HOME/.zshrc"; do [ -f "$cand" ] && rcfile="$cand" && break; done
+        local rcfile; rcfile="$(detect_shellrc)"
         if [ -n "$rcfile" ] && ! grep -q "$sub" "$rcfile" 2>/dev/null; then
           printf '\n# added by ai-cli-setup\n%s\n' "$line" >> "$rcfile"
           info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
@@ -470,7 +498,10 @@ backup_file() {
   local f="$1" bak
   [ -f "$f" ] || return 0
   bak="${f}.bak.$(date +%Y%m%d%H%M%S)"
-  cp -p "$f" "$bak" && info "$(lc "backed up: $f -> $bak" "已备份：$f -> $bak")"
+  if cp -p "$f" "$bak"; then
+    chmod 600 "$bak" 2>/dev/null || true
+    info "$(lc "backed up: $f -> $bak" "已备份：$f -> $bak")"
+  fi
 }
 write_600() {  # write_600 <target> <tmpfile>
   chmod 600 "$2" 2>/dev/null || true
@@ -489,7 +520,11 @@ json_escape() {
   local s="${1:-}"
   if have node; then node -e 'console.log(JSON.stringify(process.argv[1]))' "$s"
   elif have python3; then python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$s"
-  else printf '"%s"' "${s//\"/\\\"}"; fi
+  else
+    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+    printf '"%s"' "$s"
+  fi
 }
 
 # --- pi / omo：结构相同（models.json + settings.json） ---
@@ -503,7 +538,7 @@ write_pi_like() {
   local mjson sjson tmpm
   mjson="$(build_pi_models_json "$provider")"
   [ -n "$mjson" ] || { err "$(lc 'failed to build models.json (need node/python3)' '生成 models.json 失败（需要 node/python3）')"; return 1; }
-  sjson="$(build_pi_settings_json || true)"
+  sjson="$(build_pi_settings_json "$provider" || true)"
 
   tmpm="$(mktemp "${TMPDIR:-/tmp}/aicli-m.XXXXXX")"; printf '%s\n' "$mjson" > "$tmpm"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -547,13 +582,14 @@ print(json.dumps(out,indent=2))
 
 # defaultModel 为纯模型 id（不带 provider 前缀）
 build_pi_settings_json() {
-  local first=""
+  local provider="${1:-}" first=""
   # BusyBox 的 tr 不认 [:space:]（会当字面字符集删字母），用显式空白字符
   [ -n "$MODELS" ] && first="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
   [ -z "$first" ] && first="$MODEL"
   [ -z "$first" ] && return 1
+  [ -n "$provider" ] || provider="$(provider_from_host)"
   printf '{\n  "defaultProvider": "%s",\n  "defaultModel": "%s"\n}\n' \
-    "$(printf '%s' "$first" | sed 's/"/\\"/g')" "$(printf '%s' "$first" | sed 's/"/\\"/g')"
+    "$(printf '%s' "$provider" | sed 's/"/\\"/g')" "$(printf '%s' "$first" | sed 's/"/\\"/g')"
 }
 
 provider_from_host() {
@@ -598,13 +634,13 @@ write_claude() {
         "$f" > "$tmp"
       if [ -n "$model" ]; then
         if grep -q '"ANTHROPIC_MODEL"' "$tmp" 2>/dev/null; then
-          sed -i 's#"ANTHROPIC_MODEL"[^,}]*#"ANTHROPIC_MODEL": "'"$(printf '%s' "$model" | sed 's/[&/]/\\&/g')"'"#' "$tmp" 2>/dev/null || true
+          sed 's#"ANTHROPIC_MODEL"[^,}]*#"ANTHROPIC_MODEL": "'"$(printf '%s' "$model" | sed 's/[&/]/\\&/g')"'"#' "$tmp" > "${tmp}.m" 2>/dev/null && mv -f "${tmp}.m" "$tmp" || true
         else
           # 键不存在：AUTH_TOKEN 值后插入（BSD/GNU sed 通用：无 \n，用逗号前置换行需求为零的行内追加）
           # 若替换后 JSON 仍不合法，最终 write 前有 node 侧校验兜底；musl 无 node 时
           # 该分支仅影响已有配置缺 MODEL 键的罕见场景，退化为不写 MODEL（claude 会用默认）。
           local msafe; msafe="$(printf '%s' "$model" | sed 's/[&/]/\\&/g')"
-          sed -i -e 's#"ANTHROPIC_AUTH_TOKEN"\([^,}]*\)#"ANTHROPIC_AUTH_TOKEN"\1, "ANTHROPIC_MODEL": "'"$msafe"'"#' "$tmp" 2>/dev/null || true
+          sed -e 's#"ANTHROPIC_AUTH_TOKEN"\([^,}]*\)#"ANTHROPIC_AUTH_TOKEN"\1, "ANTHROPIC_MODEL": "'"$msafe"'"#' "$tmp" > "${tmp}.m" 2>/dev/null && mv -f "${tmp}.m" "$tmp" || true
         fi
       fi
       warn "$(lc 'no node; merged env keys into existing settings.json (backed up)' '无 node；已合并 env 键到现有 settings.json（已备份）')"
@@ -746,14 +782,10 @@ write_opencode() {
     '
     if [ "$DRY_RUN" -eq 0 ]; then
       # 把真实 key 写入 shell 配置（export AICLI_XXX_API_KEY），配置文件只留引用
-      local shellrc=""
-      for cand in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        [ -f "$cand" ] && shellrc="$cand" && break
-      done
-      [ -n "$shellrc" ] || shellrc="$HOME/.bashrc"
+      local shellrc; shellrc="$(detect_shellrc)"
       if ! grep -q "^export ${env_var}=" "$shellrc" 2>/dev/null; then
         printf '\n# %s gateway key (added by ai-cli-setup)\nexport %s=%s\n' "$provider" "$env_var" "'$API_KEY'" >> "$shellrc"
-        info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 $env_var（key 不写入 opencode.json）")"
+        info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 ${env_var}（key 不写入 opencode.json）")"
       else
         # 更新已有值
         python3 - "$shellrc" "$env_var" "$API_KEY" <<'PYK' 2>/dev/null || true
@@ -873,10 +905,14 @@ agent_count() { local a n=0; for a in $ALL_AGENTS; do n=$((n+1)); done; printf '
 parse_selection() {
   local spec="$1" tok lo hi i out="" a max
   spec="$(printf '%s' "$spec" | tr ',' ' ')"
-  [ -n "$(printf '%s' "$spec" | tr -d ' \t\r\n')" ] || return 1
   max="$(agent_count)"
+  # 空输入或回车默认全选
+  if [ -z "$(printf '%s' "$spec" | tr -d ' \t\r\n')" ]; then
+    printf '%s' "$ALL_AGENTS" | tr ' ' ','
+    return 0
+  fi
   for tok in $spec; do
-    tok="$(printf '%s' "$tok" | tr 'A-Z' 'a-z')"
+    tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
     case "$tok" in a|all|'*') printf '%s' "$ALL_AGENTS" | tr ' ' ','; return 0 ;; esac
     [ "$tok" = "0" ] || [ "$tok" = "$((max + 1))" ] && { printf '%s' "$ALL_AGENTS" | tr ' ' ','; return 0; }
     case "$tok" in *-*) lo="${tok%%-*}"; hi="${tok##*-}" ;; *) lo="$tok"; hi="$tok" ;; esac
@@ -895,11 +931,13 @@ parse_selection() {
 
 prompt_language() {
   [ "$LANG_EXPLICIT" -eq 1 ] && return 0
-  local ans=""
+  local ans="" def_num="2"
+  [ "$LANG_CODE" = "en" ] && def_num="1"
   printf '\n%s\n\n' "${BOLD}Select language  /  选择语言${RESET}" >&2
   printf '  1) English\n  2) 中文 (Chinese)\n\n' >&2
-  read_line ans "choose / 请选择 " 
-  case "$(printf '%s' "$ans" | tr 'A-Z' 'a-z')" in
+  read_line ans "choose / 请选择 [1/2, default: $def_num] "
+  [ -z "$ans" ] && ans="$def_num"
+  case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
     2|zh|cn|chinese|中文) LANG_CODE="zh" ;;
     1|en|english) LANG_CODE="en" ;;
   esac
@@ -910,13 +948,21 @@ prompt_agents() {
   all_key=$(( $(agent_count) + 1 ))
   printf '\n%s\n\n' "${BOLD}$(lc 'Which AI agents do you want to install?' '要安装哪些 AI agent？')${RESET}" >&2
   for a in $ALL_AGENTS; do
-    printf '  %s) %-12s %s\n' "$i" "$(agent_title "$a")" "${DIM}$(agent_homepage "$a")${RESET}" >&2
+    local bin status
+    bin="$(agent_bin "$a")"
+    if have "$bin"; then
+      status="${GREEN}$(lc 'installed' '已安装')${RESET}"
+    else
+      status="${DIM}$(lc 'not installed' '未安装')${RESET}"
+    fi
+    printf '  %s) %-12s %-32s [%s]\n' "$i" "$(agent_title "$a")" "${DIM}$(agent_homepage "$a")${RESET}" "$status" >&2
     i=$((i+1))
   done
-  printf '  %s) %s\n\n' "$all_key" "$(lc 'all of the above' '以上全部')" >&2
-  printf '%s\n\n' "${DIM}$(lc "  one number = single   |   1,3 or 1-3 = several   |   a or $all_key = all" "  单个数字 = 单选   |   1,3 或 1-3 = 多选   |   a 或 $all_key = 全部")${RESET}" >&2
+  printf '  %s) %-12s %s\n\n' "$all_key" "$(lc 'All above' '以上全部')" "${CYAN}[$(lc 'default: Enter' '默认: 直接回车')]${RESET}" >&2
+  printf '%s\n\n' "${DIM}$(lc "  one number = single   |   1,3 or 1-3 = several   |   Enter or a = all" "  单个数字 = 单选   |   1,3 或 1-3 = 多选   |   回车 或 a = 全部")${RESET}" >&2
   for _ in 1 2 3; do
-    read_line ans "$(lc 'select' '请选择') "
+    read_line ans "$(lc 'select' '请选择') [1-$all_key, $(lc 'default' '默认'): $all_key] "
+    [ -z "$ans" ] && ans="$all_key"
     if picked="$(parse_selection "$ans")"; then
       SELECTED="$picked"; label=""; n=0
       for a in $(printf '%s' "$picked" | tr ',' ' '); do label="${label:+$label, }$(agent_title "$a")"; n=$((n+1)); done
@@ -929,6 +975,34 @@ prompt_agents() {
   die "$(lc 'nothing selected' '未选择任何工具')"
 }
 
+# 探测本地各 agent 已有的 Base URL 与 Key（用于交互时贴心回车复用）
+EXISTING_BASE_URL=""
+EXISTING_API_KEY=""
+detect_existing_credentials() {
+  EXISTING_BASE_URL=""
+  EXISTING_API_KEY=""
+  local cf="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  local pf="$HOME/.pi/agent/models.json"
+  local gf="$HOME/.grok/config.toml"
+  local xf="$HOME/.codex/auth.json"
+
+  if [ -f "$cf" ]; then
+    [ -z "$EXISTING_BASE_URL" ] && EXISTING_BASE_URL="$(grep -m1 '"ANTHROPIC_BASE_URL"' "$cf" 2>/dev/null | sed -E 's/.*"ANTHROPIC_BASE_URL"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+    [ -z "$EXISTING_API_KEY" ] && EXISTING_API_KEY="$(grep -m1 '"ANTHROPIC_AUTH_TOKEN"' "$cf" 2>/dev/null | sed -E 's/.*"ANTHROPIC_AUTH_TOKEN"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+  fi
+  if [ -f "$pf" ]; then
+    [ -z "$EXISTING_BASE_URL" ] && EXISTING_BASE_URL="$(grep -m1 '"baseUrl"' "$pf" 2>/dev/null | sed -E 's/.*"baseUrl"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+    [ -z "$EXISTING_API_KEY" ] && EXISTING_API_KEY="$(grep -m1 '"apiKey"' "$pf" 2>/dev/null | sed -E 's/.*"apiKey"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+  fi
+  if [ -f "$gf" ]; then
+    [ -z "$EXISTING_BASE_URL" ] && EXISTING_BASE_URL="$(grep -m1 'base_url' "$gf" 2>/dev/null | sed -E 's/.*base_url[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/' || true)"
+    [ -z "$EXISTING_API_KEY" ] && EXISTING_API_KEY="$(grep -m1 'api_key' "$gf" 2>/dev/null | sed -E 's/.*api_key[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/' || true)"
+  fi
+  if [ -f "$xf" ] && [ -z "$EXISTING_API_KEY" ]; then
+    EXISTING_API_KEY="$(grep -m1 '"OPENAI_API_KEY"' "$xf" 2>/dev/null | sed -E 's/.*"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+  fi
+}
+
 # ============================================================
 # 12. 凭据收集（安装完成后、配置前）
 # ============================================================
@@ -939,14 +1013,30 @@ collect_credentials() {
     agent_needs_model "$a" && need_model=1
   done
 
+  detect_existing_credentials
+
   if [ -z "$BASE_URL" ]; then
     [ "$NON_INTERACTIVE" -eq 1 ] && die "$(lc 'missing --base-url' '缺少 --base-url')"
-    read_line BASE_URL "$(lc 'API endpoint base URL (e.g. https://api.example.com/v1)' '接口 base URL（例：https://api.example.com/v1）') "
+    local prompt_base
+    if [ -n "$EXISTING_BASE_URL" ]; then
+      prompt_base="$(lc "API endpoint base URL [default: $EXISTING_BASE_URL]" "接口 base URL [默认: $EXISTING_BASE_URL]") "
+    else
+      prompt_base="$(lc 'API endpoint base URL (e.g. https://api.example.com/v1)' '接口 base URL（例：https://api.example.com/v1）') "
+    fi
+    read_line BASE_URL "$prompt_base"
+    [ -z "$BASE_URL" ] && BASE_URL="$EXISTING_BASE_URL"
     [ -n "$BASE_URL" ] || die "$(lc 'base URL is required' 'base URL 必填')"
   fi
   if [ -z "$API_KEY" ]; then
     [ "$NON_INTERACTIVE" -eq 1 ] && die "$(lc 'missing --api-key' '缺少 --api-key')"
-    read_line API_KEY "$(lc 'API key' 'API key') " 1
+    local prompt_key
+    if [ -n "$EXISTING_API_KEY" ]; then
+      prompt_key="$(lc "API key [Enter to keep: $(secret_mask "$EXISTING_API_KEY")]" "API key [回车保留已有密钥: $(secret_mask "$EXISTING_API_KEY")]") "
+    else
+      prompt_key="$(lc 'API key' 'API key') "
+    fi
+    read_line API_KEY "$prompt_key" 1
+    [ -z "$API_KEY" ] && API_KEY="$EXISTING_API_KEY"
     [ -n "$API_KEY" ] || die "$(lc 'API key is required' 'API key 必填')"
   fi
   if [ "$need_models" -eq 1 ] && [ -z "$MODELS" ]; then
@@ -990,7 +1080,7 @@ collect_credentials() {
   if [ "$need_model" -eq 1 ] && [ -z "$MODEL" ]; then
     if [ -n "$MODELS" ]; then
       MODEL="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
-      info "$(lc "default model: $MODEL (first of the list; rerun with --model to change)" "默认模型：$MODEL（列表第一个；要换请用 --model 重跑）")"
+      info "$(lc "default model: $MODEL (first of the list; rerun with --model to change)" "默认模型：${MODEL}（列表第一个；要换请用 --model 重跑）")"
     elif [ "$NON_INTERACTIVE" -eq 0 ]; then
       local _eofguard=0
       while [ -z "$MODEL" ]; do
@@ -1153,44 +1243,85 @@ main() {
     else SELECTED="$(printf '%s' "$ALL_AGENTS" | tr ' ' ',')"; fi
   fi
 
+  local total_start total_end total_elapsed
+  total_start="$(date +%s)"
+
   # --- 阶段 1：安装 ---
-  local a rc=0 okc=0 failc=0
+  step "$(lc '[1/3] Install AI agents' '[1/3] 安装 AI agent')"
+  local a rc=0 okc=0 failc=0 t0 t1 t_inst t_conf
   local -a results=()
+
   for a in $(printf '%s' "$SELECTED" | tr ',' ' '); do
     if agent_linux_only "$a" && [ "$OS" != "linux" ]; then
       warn "$(lc "$(agent_title "$a") is Linux/WSL only; skipping install" "$(agent_title "$a") 仅支持 Linux/WSL；跳过安装")"
-      results+=("SKIP|$a|0"); continue
+      eval "time_inst_${a}=0"
+      eval "status_inst_${a}=SKIP"
+      continue
     fi
+    t0="$(date +%s)"
     rc=0; install_agent "$a" || rc=$?
-    if [ "$rc" -eq 0 ]; then results+=("OK|$a|install"); else
+    t1="$(date +%s)"
+    eval "time_inst_${a}=$((t1 - t0))"
+    if [ "$rc" -eq 0 ]; then
+      eval "status_inst_${a}=OK"
+    else
+      eval "status_inst_${a}=FAIL"
+      failc=$((failc + 1))
       results+=("FAIL|$a|install")
       [ "$FAIL_FAST" -eq 1 ] && { warn "$(lc 'fail-fast: stopping' 'fail-fast：停止')"; break; }
     fi
   done
 
   # --- 阶段 2：统一收集凭据 ---
-  step "$(lc 'credentials (asked once, shared by all agents)' '凭据（只问一次，所有 agent 共用）')"
+  step "$(lc '[2/3] Credentials (asked once, shared by all agents)' '[2/3] 凭据（只问一次，所有 agent 共用）')"
   collect_credentials
 
   # --- 阶段 3：批量配置 ---
+  step "$(lc '[3/3] Generate native configurations' '[3/3] 批量写入原生配置')"
   for a in $(printf '%s' "$SELECTED" | tr ',' ' '); do
+    local s_inst; eval "s_inst=\${status_inst_${a}:-OK}"
+    if [ "$s_inst" = "FAIL" ]; then
+      continue
+    fi
+    t0="$(date +%s)"
     rc=0; configure_agent "$a" || rc=$?
-    if [ "$rc" -eq 0 ]; then okc=$((okc+1)); else failc=$((failc+1)); results+=("FAIL|$a|config")
+    t1="$(date +%s)"
+    t_conf=$((t1 - t0))
+    eval "t_inst=\${time_inst_${a}:-0}"
+    local total_agent=$((t_inst + t_conf))
+    if [ "$rc" -eq 0 ]; then
+      okc=$((okc + 1))
+      if [ "$s_inst" = "SKIP" ]; then
+        results+=("SKIP|$a|${total_agent}s")
+      else
+        results+=("OK|$a|${total_agent}s")
+      fi
+    else
+      failc=$((failc + 1))
+      results+=("FAIL|$a|config")
       [ "$FAIL_FAST" -eq 1 ] && break
     fi
   done
 
+  total_end="$(date +%s)"
+  total_elapsed=$((total_end - total_start))
+
   # --- 汇总 ---
-  printf '\n%s\n' "${BOLD}$(lc 'summary' '汇总')${RESET}" >&2
+  printf '\n%s\n' "${BOLD}$(lc 'Summary' '汇总')${RESET}" >&2
   printf '%s\n' "${DIM}────────────────────────────────────────────${RESET}" >&2
-  local r st a2 ph
+  local r st a2 note
   for r in ${results[@]+"${results[@]}"}; do
-    st="${r%%|*}"; r="${r#*|}"; a2="${r%%|*}"; ph="${r##*|}"
-    if [ "$st" = "OK" ]; then printf '  %s  %-12s %s\n' "${GREEN}✓${RESET}" "$(agent_title "$a2")" "${DIM}$ph${RESET}" >&2
-    elif [ "$st" = "SKIP" ]; then printf '  %s  %-12s %s\n' "${YELLOW}-${RESET}" "$(agent_title "$a2")" "${DIM}$(lc 'Linux only, skipped' '仅 Linux，已跳过')${RESET}" >&2
-    else printf '  %s  %-12s %s\n' "${RED}✗${RESET}" "$(agent_title "$a2")" "${DIM}$ph${RESET}" >&2; fi
+    st="${r%%|*}"; r="${r#*|}"; a2="${r%%|*}"; note="${r##*|}"
+    if [ "$st" = "OK" ]; then
+      printf '  %s  %-12s %s\n' "${GREEN}✓${RESET}" "$(agent_title "$a2")" "${DIM}$note${RESET}" >&2
+    elif [ "$st" = "SKIP" ]; then
+      printf '  %s  %-12s %s\n' "${YELLOW}-${RESET}" "$(agent_title "$a2")" "${DIM}$note ($(lc 'macOS: config only' 'macOS: 仅写配置'))${RESET}" >&2
+    else
+      printf '  %s  %-12s %s\n' "${RED}✗${RESET}" "$(agent_title "$a2")" "${RED}$(lc "$note failed" "$note 失败")${RESET}" >&2
+    fi
   done
-  info "$(lc "$okc configured, $failc failed" "配置成功 $okc 个，失败 $failc 个")"
+  printf '%s\n' "${DIM}────────────────────────────────────────────${RESET}" >&2
+  info "$(lc "$okc configured, $failc failed (total: ${total_elapsed}s)" "配置成功 $okc 个，失败 $failc 个（总耗时 ${total_elapsed}s）")"
   [ "$failc" -eq 0 ]
 }
 

@@ -30,6 +30,9 @@ jobs:
       - name: ShellCheck
         run: shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
 
+      - name: Multibyte variable check (bash 3.2 compatibility)
+        run: python3 scripts/check-multibyte-vars.py ai-cli-setup.sh scripts/changelog.sh
+
       - name: CHANGELOG is present and well-formed
         run: |
           test -f CHANGELOG.md || { echo "::error::CHANGELOG.md missing"; exit 1; }
