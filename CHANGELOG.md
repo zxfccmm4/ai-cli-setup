@@ -25,6 +25,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### ✨ Features
 
+- 优化终端交互体验、修复 provider 映射与跨平台兼容性并美化 README ([`0b92578`](https://github.com/zxfccmm4/ai-cli-setup/commit/0b9257837b976574e2b4c828f42f7bd88a57b09f))
 - opencode 支持 V2 配置格式（providers/settings/package + env 凭据引用） ([`b518fb8`](https://github.com/zxfccmm4/ai-cli-setup/commit/b518fb87b0b3b0bcc81ea67dce1981d28dd606f0))
 - v2.0 全自研重写——不再包装上游脚本 ([`c6a9852`](https://github.com/zxfccmm4/ai-cli-setup/commit/c6a9852219ba6c741b5c08397cd52bca7180b904))
 - API key 改为显式掩码输入，实时显示前3+星号+后3 ([`1eb53c6`](https://github.com/zxfccmm4/ai-cli-setup/commit/1eb53c6e02d82182acbc8da1a04ab9ccfcf31768))
@@ -53,6 +54,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 📝 Documentation
 
+- README 改版为介绍版 ([`0910b27`](https://github.com/zxfccmm4/ai-cli-setup/commit/0910b27cfd65e7d99b626333b7aeda5ad41313d8))
 - README 二次优化 ([`a8cd73c`](https://github.com/zxfccmm4/ai-cli-setup/commit/a8cd73cea1eba04891b9c4b0b0c8607e91726277))
 - 重构 README ([`d4ad8be`](https://github.com/zxfccmm4/ai-cli-setup/commit/d4ad8be4cd5b25ed06337a1332ff3b50e14256a5))
 - 补充 Release 产物说明（chmod +x 与独立使用） ([`611e6d6`](https://github.com/zxfccmm4/ai-cli-setup/commit/611e6d61ba1a914f3c401ec7b94ded8a2ff0af68))
