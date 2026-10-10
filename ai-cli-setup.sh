@@ -183,9 +183,12 @@ read_tty() {
 }
 
 # ask <变量名> <提示语> <默认值> <是否隐藏>
+# ask <变量名> <提示语> <默认值> <是否隐藏> [显示用默认值]
+# 第 5 个参数只影响回显（默认值很长时传截断版），回车仍取真实默认值。
 ask() {
-  local __var="$1" __prompt="$2" __def="${3:-}" __secret="${4:-0}" __val=""
-  read_tty __val "${__prompt}${__def:+ ${DIM}[${__def}]${RESET}} " "$__secret"
+  local __var="$1" __prompt="$2" __def="${3:-}" __secret="${4:-0}" __disp="${5:-}" __val=""
+  [ -n "$__disp" ] || __disp="$__def"
+  read_tty __val "${__prompt}${__def:+ ${DIM}[${__disp}]${RESET}} " "$__secret"
   [ -n "$__val" ] || __val="$__def"
   printf -v "$__var" '%s' "$__val"
 }
@@ -547,12 +550,22 @@ collect_credentials() {
     local fetched=""
     fetched="$(fetch_models "$BASE_URL" "$API_KEY" || true)"
     if [ -n "$fetched" ]; then
-      info "$(lc "found models: $fetched" "发现模型：$fetched")"
+      # 模型可能很多：>20 个时逐行展示前 20 个，提示里的默认值截断显示
+      local mcount="" mdisp=""
+      mcount="$(printf '%s' "$fetched" | tr ',' '\n' | grep -c . || true)"
+      if [ "${mcount:-0}" -gt 20 ]; then
+        printf '%s\n' "$(lc "found $mcount models:" "发现 $mcount 个模型：")" >&2
+        printf '%s' "$fetched" | tr ',' '\n' | head -20 | sed 's/^/  /' >&2
+        printf '  %s\n' "$(lc "… (+$((mcount - 20)) more; blank = all $mcount)" "…（还有 $((mcount - 20)) 个；留空 = 全部 $mcount 个）")" >&2
+        mdisp="$(printf '%s' "$fetched" | cut -d, -f1-5 | paste -sd, -), … (+$((mcount - 5)) more)"
+      else
+        info "$(lc "found models: $fetched" "发现模型：$fetched")"
+      fi
       if [ "$NON_INTERACTIVE" -eq 1 ] || ! have_tty; then
         MODELS="$fetched"
       else
         local ans=""
-        ask ans "$(lc 'model ids to register (comma separated, blank = all above)' '要写入的模型 id（逗号分隔，留空 = 用上面的全部）')" "$fetched"
+        ask ans "$(lc 'model ids to register (comma separated, blank = all)' '要写入的模型 id（逗号分隔，留空 = 全部）')" "$fetched" 0 "${mdisp:-$fetched}"
         MODELS="$ans"
       fi
     elif [ "$NON_INTERACTIVE" -eq 1 ] || ! have_tty; then
