@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### ✨ Features
 
+- 新增 Release 自动化与 CHANGELOG 生成器 ([`33a2017`](https://github.com/zxfccmm4/ai-cli-setup/commit/33a2017edb3c958d82eef4c9c16688e65983ef1f))
 - 新增 opencode 支持 + GitHub Actions CI ([`9329890`](https://github.com/zxfccmm4/ai-cli-setup/commit/93298903925d279b8ddbca725d373d5524cc2ebd))
 - 统一 zxfccmm4 系列 AI CLI 安装脚本 ([`7754a52`](https://github.com/zxfccmm4/ai-cli-setup/commit/7754a52a5ff9ef35ec67d15a4c99da4a1236c58e))
 
