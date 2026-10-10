@@ -45,23 +45,7 @@ jobs:
         run: shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
 
       - name: No bare $var before multibyte text
-        run: |
-          # bash 3.2 + set -u 会把 $var 后面紧跟的中文首字节当成变量名的一部分，
-          # 导致 "unbound variable"。必须写成 ${var}。
-          # 用 python3 而不是 grep -P（BSD grep 不支持 -P）。
-          python3 - ai-cli-setup.sh scripts/changelog.sh <<'PY'
-          import re, sys
-          bad = False
-          for path in sys.argv[1:]:
-              src = open(path, encoding='utf-8').read()
-              for i, line in enumerate(src.splitlines(), 1):
-                  for m in re.finditer(r'\$[A-Za-z_][A-Za-z0-9_]*(?=[^\x00-\x7f])', line):
-                      print(f'{path}:{i}: bare {m.group(0)} followed by non-ASCII; use ${{{m.group(0)[1:]}}}')
-                      bad = True
-          sys.exit(1 if bad else 0)
-          PY
-          echo "no bare \$var before multibyte text"
-
+        run: python3 scripts/check-multibyte-vars.py ai-cli-setup.sh scripts/changelog.sh
       - name: CHANGELOG is present and well-formed
         run: |
           test -f CHANGELOG.md || { echo "::error::CHANGELOG.md missing"; exit 1; }
