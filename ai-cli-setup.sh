@@ -174,12 +174,14 @@ read_tty() {
     printf '%s' "${__prompt}" >&2
   fi
 
+  if [ "$__secret" -eq 1 ]; then
+    read_secret "$__var"
+    return 0
+  fi
   if [ "$__via_tty" -eq 1 ]; then
-    if [ "$__secret" -eq 1 ]; then IFS= read -r -s __ans < /dev/tty || true; printf '\n' > /dev/tty
-    else IFS= read -r __ans < /dev/tty || true; fi
+    IFS= read -r __ans < /dev/tty || true
   else
-    if [ "$__secret" -eq 1 ]; then IFS= read -r -s __ans || true; printf '\n'
-    else IFS= read -r __ans || true; fi
+    IFS= read -r __ans || true
   fi
   printf -v "$__var" '%s' "$__ans"
 }
@@ -207,11 +209,82 @@ confirm() {
   case "$__ans" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
+# 掩码：只显示前后 3 个字符；长度 <=6 时全打星
 mask_secret() {
   local s="${1:-}"
   if [ -z "$s" ]; then printf '%s' "$(lc '(empty)' '（空）')"
-  elif [ ${#s} -le 8 ]; then printf '****'
-  else printf '%s****%s' "${s:0:4}" "${s: -4}"; fi
+  elif [ ${#s} -le 6 ]; then printf '%s' "$(printf '%.*s' ${#s} '********')"
+  else printf '%s%s%s' "${s:0:3}" "$(printf '%.*s' $((${#s} - 6)) '************************************************')" "${s: -3}"; fi
+}
+
+# 交互式密钥输入：逐字符读取，实时回显掩码（前3 + 星号 + 后3）
+# 支持：退格（0x7f/0x08）、Ctrl-U 清空（0x15）、Ctrl-D 结束（0x04）、Enter 提交
+# 非终端（无字符级读取条件）时退化为整行静默读 + 完成后回显一次掩码
+secret_mask() {
+  local s="${1:-}"
+  if [ -z "$s" ] || [ ${#s} -le 6 ]; then
+    printf '%s' "$(printf '%.*s' ${#s} '********')"
+  else
+    printf '%s%s%s' "${s:0:3}" "$(printf '%.*s' $((${#s} - 6)) '************************************************')" "${s: -3}"
+  fi
+}
+
+# read_secret <变量名>：字符级读取并回显掩码；out 目标为 tty（终端或 /dev/tty）
+read_secret() {
+  local __var="$1" __c="" __buf="" __prev=0 __m="" __rc=0
+  local __out="/dev/tty" __in="/dev/tty"
+  stdin_is_input && { __out="/dev/stderr"; __in="/dev/stdin"; }
+
+  if [ "$__in" = "/dev/stdin" ] && [ ! -t 0 ]; then
+    # 管道且未 --assume-tty：整行静默读，完成后回显掩码
+    IFS= read -r __buf || __rc=$?
+    printf '%s
+' "$(secret_mask "$__buf")" > "$__out" 2>/dev/null || true
+    printf -v "$__var" '%s' "$__buf"
+    return $__rc
+  fi
+
+  while :; do
+    __c=""
+    if [ "$__in" = "/dev/stdin" ]; then
+      IFS= read -r -s -n 1 __c || { __rc=$?; break; }
+    else
+      IFS= read -r -s -n 1 __c < "$__in" || { __rc=$?; break; }
+    fi
+    # Enter（read 收到分隔符返回空）
+    if [ -z "$__c" ]; then break; fi
+    case "$__c" in
+      $'\x7f'|$'\x08')   # 退格
+        if [ -n "$__buf" ]; then
+          __buf="${__buf%?}"
+          __m="$(secret_mask "$__buf")"
+          printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+          printf '%s' "$__m" > "$__out" 2>/dev/null || true
+          local __pad=$((__prev - ${#__m}))
+          [ $__pad -gt 0 ] && printf '%*s' $__pad '' > "$__out" 2>/dev/null || true
+          __prev=${#__m}
+        fi
+        ;;
+      $'\x15')            # Ctrl-U 清空
+        __buf=""
+        printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+        printf '%*s' $__prev '' > "$__out" 2>/dev/null || true
+        printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+        __prev=0
+        ;;
+      $'\x04') break ;;    # Ctrl-D 视为结束
+      *)
+        __buf="${__buf}${__c}"
+        __m="$(secret_mask "$__buf")"
+        printf '\b%.0s' $(seq 1 $__prev) > "$__out" 2>/dev/null || true
+        printf '%s' "$__m" > "$__out" 2>/dev/null || true
+        __prev=${#__m}
+        ;;
+    esac
+  done
+  printf '\n' > "$__out" 2>/dev/null || true
+  printf -v "$__var" '%s' "$__buf"
+  return 0
 }
 
 mask_url() {
