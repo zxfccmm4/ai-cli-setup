@@ -30,6 +30,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 🐛 Bug Fixes
 
+- 掩码输入改用 stty -echo，消除快速输入时的明文闪现 ([`45b9031`](https://github.com/zxfccmm4/ai-cli-setup/commit/45b9031c08ce1b7563426ffa191b7df947a419b4))
 - 管道模式下 have_tty 的 exec 泄漏把 stderr 永久吞进 /dev/null ([`018570e`](https://github.com/zxfccmm4/ai-cli-setup/commit/018570e527974d7452dda30497e0f54ee4a4b76c))
 - 模型列表过多时多行展示、默认值截断显示 ([`cdc51be`](https://github.com/zxfccmm4/ai-cli-setup/commit/cdc51bea20e277aff206567d9d491212b28710cb))
 - 拉取模型列表时带上 API key（Bearer） ([`becd51e`](https://github.com/zxfccmm4/ai-cli-setup/commit/becd51e7f83b800b258ab54812d19a21f7999f2a))
