@@ -37,6 +37,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 - 拉取模型列表时带上 API key（Bearer） ([`becd51e`](https://github.com/zxfccmm4/ai-cli-setup/commit/becd51e7f83b800b258ab54812d19a21f7999f2a))
 - 修复 bash 3.2 下 $var 紧跟中文导致的 unbound variable ([`a394b98`](https://github.com/zxfccmm4/ai-cli-setup/commit/a394b981fe78ddfe6d810cbb712f58fce7d28671))
 
+### ♻️ Refactoring
+
+- 删除 upstream/ 快照——脚本改为全自研安装，不再包装上游仓库 ([`e86aece`](https://github.com/zxfccmm4/ai-cli-setup/commit/e86aece16d86f5d06596ff2906d24597b5d929a5))
+
 ### 📝 Documentation
 
 - README 二次优化 ([`a8cd73c`](https://github.com/zxfccmm4/ai-cli-setup/commit/a8cd73cea1eba04891b9c4b0b0c8607e91726277))

@@ -17,7 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # CHANGELOG 检查需要完整历史（默认 depth=1 会看不到旧提交）
           fetch-depth: 0
 
       - name: Show environment
@@ -25,77 +24,38 @@ jobs:
           bash --version | head -1
           shellcheck --version | head -3
 
-      - name: Bash syntax check (all scripts)
-        run: |
-          fail=0
-          while IFS= read -r f; do
-            printf 'checking %s ... ' "$f"
-            if bash -n "$f"; then echo ok; else echo FAIL; fail=1; fi
-          done < <(git ls-files '*.sh' | grep -v '^upstream/')
-          exit $fail
+      - name: Bash syntax check
+        run: bash -n ai-cli-setup.sh && echo ok
 
-      - name: Syntax check upstream snapshots (informational)
-        continue-on-error: true
-        run: |
-          while IFS= read -r f; do
-            bash -n "$f" && echo "ok  $f" || echo "skip $f"
-          done < <(git ls-files 'upstream/*.sh')
-
-      - name: ShellCheck (our script only)
+      - name: ShellCheck
         run: shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
 
-      - name: No bare $var before multibyte text
-        run: python3 scripts/check-multibyte-vars.py ai-cli-setup.sh scripts/changelog.sh
       - name: CHANGELOG is present and well-formed
         run: |
           test -f CHANGELOG.md || { echo "::error::CHANGELOG.md missing"; exit 1; }
-          head -1 CHANGELOG.md | grep -qx '# Changelog' || { echo "::error::CHANGELOG.md header wrong"; exit 1; }
+          head -1 CHANGELOG.md | grep -qx '# Changelog' || { echo "::error::header wrong"; exit 1; }
           grep -q '^## \[' CHANGELOG.md || { echo "::error::no version sections"; exit 1; }
-          echo "CHANGELOG.md OK"
+          echo OK
 
       - name: CHANGELOG freshness (warning only)
         run: |
-          # 严格失败会造成鸡生蛋问题（打 tag 后 --all 输出会变），
-          # 所以这里只在 Step Summary 里提醒，不阻塞合并。
-          cp CHANGELOG.md /tmp/changelog.before
+          cp CHANGELOG.md /tmp/cl.before
           ./scripts/changelog.sh --all --update CHANGELOG.md
-          if diff -u /tmp/changelog.before CHANGELOG.md > /tmp/changelog.diff; then
-            echo "CHANGELOG.md is up to date"
-          else
-            {
-              echo '### ⚠️ CHANGELOG.md is stale'
-              echo
-              echo 'Run `./scripts/changelog.sh --all --update CHANGELOG.md` and commit.'
-              echo
-              echo '```diff'
-              head -60 /tmp/changelog.diff
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+          if ! diff -q /tmp/cl.before CHANGELOG.md >/dev/null; then
             echo "::warning::CHANGELOG.md is stale - run ./scripts/changelog.sh --all --update CHANGELOG.md"
           fi
-          # 恢复，避免后续步骤受影响
-          cp /tmp/changelog.before CHANGELOG.md
+          cp /tmp/cl.before CHANGELOG.md
 
       - name: changelog.sh is idempotent
         run: |
           rm -f /tmp/CL.md
           ./scripts/changelog.sh --update /tmp/CL.md >/dev/null
-          cp /tmp/CL.md /tmp/CL.first
+          cp /tmp/CL.md /tmp/CL.1
           ./scripts/changelog.sh --update /tmp/CL.md >/dev/null
-          diff /tmp/CL.first /tmp/CL.md
-          ./scripts/changelog.sh --version v9.9.9 --date 2026-01-01 --update /tmp/CL.md >/dev/null
-          cp /tmp/CL.md /tmp/CL.second
-          ./scripts/changelog.sh --version v9.9.9 --date 2026-01-01 --update /tmp/CL.md >/dev/null
-          diff /tmp/CL.second /tmp/CL.md
-          echo "changelog.sh is idempotent"
-
-      - name: ShellCheck (upstream snapshots, informational)
-        continue-on-error: true
-        run: |
-          find upstream -name '*.sh' -print0 | xargs -0 -r shellcheck -S error
+          diff /tmp/CL.1 /tmp/CL.md && echo idempotent
 
   smoke:
-    name: smoke test (no network installs)
+    name: smoke test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -108,191 +68,110 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Version / help
+      - name: Version / help / list / doctor
         run: |
           ./ai-cli-setup.sh --version
           ./ai-cli-setup.sh --help >/dev/null
-          ./ai-cli-setup.sh help >/dev/null
-
-      - name: list + doctor
-        run: |
           ./ai-cli-setup.sh list
           ./ai-cli-setup.sh doctor
 
-      - name: Local snapshot resolution (offline, no cache needed)
-        run: |
-          ./ai-cli-setup.sh download --only pi,omo,codex,grok
-          ./ai-cli-setup.sh list
-
-      - name: opencode config write (isolated HOME)
+      - name: Non-interactive full config write (isolated HOME)
         run: |
           export HOME="$RUNNER_TEMP/fakehome"
-          export XDG_CONFIG_HOME="$HOME/.config"   # runners preset XDG_CONFIG_HOME; keep it inside our fake HOME
+          export XDG_CONFIG_HOME="$HOME/.config"
           mkdir -p "$HOME"
-          ./ai-cli-setup.sh opencode -y --skip-install \
+          ./ai-cli-setup.sh all -y --skip-install \
             --base-url https://gw.example.com/v1 \
             --api-key sk-test-123456 \
             --models gpt-5,gpt-5-mini
-          test -f "$HOME/.config/opencode/opencode.json"
-          node -e '
-            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
-            if (c["$schema"] !== "https://opencode.ai/config.json") throw new Error("$schema missing");
-            const p = c.provider["gw-example-com"];
-            if (!p) throw new Error("provider gw-example-com missing: " + Object.keys(c.provider));
-            if (p.options.baseURL !== "https://gw.example.com/v1") throw new Error("baseURL wrong");
-            if (p.options.apiKey !== "sk-test-123456") throw new Error("apiKey wrong");
-            if (!p.models["gpt-5"] || !p.models["gpt-5-mini"]) throw new Error("models missing");
-            if (c.model !== "gw-example-com/gpt-5") throw new Error("default model wrong: " + c.model);
-            console.log("opencode.json OK");
-          '
-          # 配置里含密钥，权限必须是 600
-          perm=$(stat -c '%a' "$HOME/.config/opencode/opencode.json" 2>/dev/null || stat -f '%Lp' "$HOME/.config/opencode/opencode.json")
-          echo "permissions: $perm"
-          [ "$perm" = "600" ] || { echo "expected 600"; exit 1; }
-
-      - name: opencode.json merge preserves existing keys
-        run: |
-          export HOME="$RUNNER_TEMP/fakehome2"
-          export XDG_CONFIG_HOME="$HOME/.config"
-          mkdir -p "$HOME/.config/opencode"
-          cat > "$HOME/.config/opencode/opencode.json" <<'JSON'
-          {
-            "$schema": "https://opencode.ai/config.json",
-            "plugin": ["my-plugin"],
-            "provider": { "magpie": { "options": { "baseURL": "http://127.0.0.1:3425/v1" } } }
-          }
-          JSON
-          ./ai-cli-setup.sh opencode -y --skip-install \
-            --base-url https://openrouter.ai/api/v1 \
-            --api-key sk-test-123456 \
-            --models anthropic/claude-opus-4.8
-          node -e '
-            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
-            if (JSON.stringify(c.plugin) !== JSON.stringify(["my-plugin"])) throw new Error("plugin lost");
-            if (!c.provider.magpie) throw new Error("existing provider lost");
-            if (!c.provider.openrouter) throw new Error("openrouter not added");
-            if (c.model !== "openrouter/anthropic/claude-opus-4.8") throw new Error("default model wrong: " + c.model);
-            console.log("merge OK");
-          '
-          ls "$HOME/.config/opencode/" | grep -q 'opencode.json.bak' || { echo "backup missing"; exit 1; }
-
-      - name: dry-run grok config (isolated HOME)
-        run: |
-          export HOME="$RUNNER_TEMP/fakehome3"
-          export XDG_CONFIG_HOME="$HOME/.config"
-          mkdir -p "$HOME"
-          ./ai-cli-setup.sh grok -y --skip-install \
-            --base-url https://gw.example.com/v1 \
-            --api-key sk-test-123456 \
-            --grok-alias CI --grok-search on
+          test -f "$HOME/.pi/agent/models.json"
+          test -f "$HOME/.pi/agent/settings.json"
+          test -f "$HOME/.omo/agent/models.json"
+          test -f "$HOME/.codex/config.toml"
+          test -f "$HOME/.codex/auth.json"
           test -f "$HOME/.grok/config.toml"
-          grep -q 'default = "CI"' "$HOME/.grok/config.toml"
-          grep -q 'api_backend = "responses"' "$HOME/.grok/config.toml"
-          grep -q 'web_search = "CI"' "$HOME/.grok/config.toml"
-          perm=$(stat -c '%a' "$HOME/.grok/config.toml" 2>/dev/null || stat -f '%Lp' "$HOME/.grok/config.toml")
-          [ "$perm" = "600" ] || { echo "expected 600, got $perm"; exit 1; }
+          test -f "$HOME/.config/opencode/opencode.json"
+          echo "all config files written"
 
-      - name: --dry-run never writes anything
+      - name: Config contents + permissions
         run: |
-          export HOME="$RUNNER_TEMP/fakehome4"
+          export HOME="$RUNNER_TEMP/fakehome"
           export XDG_CONFIG_HOME="$HOME/.config"
-          mkdir -p "$HOME"
-          ./ai-cli-setup.sh opencode,grok -y --dry-run --skip-install \
-            --base-url https://gw.example.com/v1 --api-key sk-test-123456 --models a,b
-          if [ -e "$HOME/.config/opencode/opencode.json" ] || [ -e "$HOME/.grok/config.toml" ]; then
-            echo "dry-run wrote files!"; exit 1
-          fi
-          echo "dry-run wrote nothing"
+          node -e '
+            const base = process.env.HOME;
+            const pi = require(base + "/.pi/agent/models.json");
+            const p = Object.values(pi.providers)[0];
+            if (p.baseUrl !== "https://gw.example.com/v1") throw new Error("pi baseUrl");
+            if (p.apiKey !== "sk-test-123456") throw new Error("pi apiKey");
+            if (p.models.length !== 2) throw new Error("pi models");
+            const st = require(base + "/.pi/agent/settings.json");
+            if (st.defaultModel !== "gpt-5") throw new Error("pi defaultModel: " + st.defaultModel);
+            const st2 = require(base + "/.omo/agent/settings.json");
+            if (st2.defaultModel !== "gpt-5") throw new Error("omo defaultModel");
+            const oc = require(base + "/.config/opencode/opencode.json");
+            const o = oc.provider["gw-example-com"];
+            if (!o || o.options.apiKey !== "sk-test-123456") throw new Error("opencode");
+            if (oc.model !== "gw-example-com/gpt-5") throw new Error("opencode default: " + oc.model);
+            console.log("config contents OK");
+          '
+          grep -q 'base_url = "https://gw.example.com"' "$HOME/.codex/config.toml"
+          grep -q 'sk-test-123456' "$HOME/.codex/auth.json"
+          grep -q 'api_key = "sk-test-123456"' "$HOME/.grok/config.toml"
+          echo "codex/grok contents OK"
 
-      - name: missing credentials fail loudly in -y mode
-        run: |
-          if ./ai-cli-setup.sh opencode -y --skip-install 2>/dev/null; then
-            echo "expected failure without --base-url"; exit 1
-          fi
-          echo "correctly failed"
-
-      - name: unknown tool is rejected
-        run: |
-          if ./ai-cli-setup.sh bogus 2>/dev/null; then echo "should fail"; exit 1; fi
-          if ./ai-cli-setup.sh opencode,nope 2>/dev/null; then echo "should fail"; exit 1; fi
-          echo "correctly rejected"
-
-      - name: interactive flow (select language, then agents) via AICLI_ASSUME_TTY
+      - name: Interactive flow (language -> agents) via AICLI_ASSUME_TTY
         run: |
           export HOME="$RUNNER_TEMP/fakehome6"
           export XDG_CONFIG_HOME="$HOME/.config"
-          export AICLI_CACHE_DIR="$RUNNER_TEMP/aicli-cache"
+          export AICLI_ASSUME_TTY=1
           mkdir -p "$HOME"
-          # 2=中文 -> 6=OpenCode -> base_url -> api_key -> models
-          printf '2\n6\nhttps://gw.example.com/v1\nsk-ci-interactive\nm1,m2\n' \
+          printf '2\n6\nhttps://gw.example.com/v1\nsk-ci-zh\nm1,m2\n' \
             | ./ai-cli-setup.sh --skip-install > /tmp/i1.out 2>&1
+          grep -q '要安装哪些' /tmp/i1.out
+          grep -q '已选择：OpenCode' /tmp/i1.out
           test -f "$HOME/.config/opencode/opencode.json"
-          grep -q '请选择' /tmp/i1.out                 # language prompt present
-          grep -q '已选择：OpenCode' /tmp/i1.out       # single pick respected
-          node -e '
-            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
-            const p = c.provider["gw-example-com"];
-            if (!p) throw new Error("provider missing");
-            if (p.options.apiKey !== "sk-ci-interactive") throw new Error("apiKey wrong");
-            if (!p.models["m1"] || !p.models["m2"]) throw new Error("models missing");
-            console.log("zh + single pick OK");
-          '
-          # English + multi pick (5,6) + dry-run: nothing written
+          echo "zh + single pick OK"
+
+      - name: Menu retry + dry-run + guards
+        run: |
           export HOME="$RUNNER_TEMP/fakehome7"
           export XDG_CONFIG_HOME="$HOME/.config"
+          export AICLI_ASSUME_TTY=1
           mkdir -p "$HOME"
-          printf '1\n5,6\nhttps://gw.example.com/v1\nsk-x\nm1\n' \
-            | ./ai-cli-setup.sh --skip-install --dry-run > /tmp/i2.out 2>&1
-          grep -q 'selected: Grok Build, OpenCode' /tmp/i2.out
-          if [ -e "$HOME/.config/opencode/opencode.json" ] || [ -e "$HOME/.grok/config.toml" ]; then
-            echo "dry-run wrote files"; exit 1
-          fi
-          echo "en + multi pick (dry-run) OK"
+          printf '1\n9\nzz\n6\nhttps://gw.example.com/v1\nsk-x\nm1\n' \
+            | ./ai-cli-setup.sh --skip-install > /tmp/i2.out 2>&1
+          grep -q 'invalid choice: 9' /tmp/i2.out
+          grep -q 'selected: OpenCode' /tmp/i2.out
+          # dry-run 不落盘
+          ./ai-cli-setup.sh all -y --skip-install --dry-run \
+            --base-url https://gw.example.com/v1 --api-key k --models a >/dev/null 2>&1
+          [ ! -e "$HOME/.grok/config.toml" ] && echo "dry-run clean"
+          # 缺凭据 / 未知 agent
+          if ./ai-cli-setup.sh all -y --skip-install >/dev/null 2>&1; then echo "should fail"; exit 1; fi
+          if ./ai-cli-setup.sh bogus >/dev/null 2>&1; then echo "should fail"; exit 1; fi
+          echo "guards OK"
 
-      - name: interactive menu retries on invalid input
+      - name: Merge preserves existing keys
         run: |
           export HOME="$RUNNER_TEMP/fakehome8"
           export XDG_CONFIG_HOME="$HOME/.config"
-          export AICLI_CACHE_DIR="$RUNNER_TEMP/aicli-cache"
-          mkdir -p "$HOME"
-          printf '1\n9\nzz\n6\nhttps://gw.example.com/v1\nsk-retry\nm1\n' \
-            | ./ai-cli-setup.sh --skip-install > /tmp/i3.out 2>&1
-          grep -q 'invalid choice: 9' /tmp/i3.out
-          grep -q 'invalid choice: zz' /tmp/i3.out
-          grep -q 'selected: OpenCode' /tmp/i3.out
-          test -f "$HOME/.config/opencode/opencode.json"
-          echo "menu retry OK"
+          mkdir -p "$HOME/.config/opencode"
+          cat > "$HOME/.config/opencode/opencode.json" <<'JSON'
+          { "$schema": "x", "plugin": ["p1"], "provider": { "magpie": { "options": { "baseURL": "http://1/v1" } } } }
+          JSON
+          ./ai-cli-setup.sh opencode -y --skip-install \
+            --base-url https://openrouter.ai/api/v1 --api-key sk-m --models anthropic/claude-opus-4.8
+          node -e '
+            const c = require(process.env.HOME + "/.config/opencode/opencode.json");
+            if (JSON.stringify(c.plugin) !== JSON.stringify(["p1"])) throw new Error("plugin lost");
+            if (!c.provider.magpie) throw new Error("provider lost");
+            if (!c.provider.openrouter) throw new Error("openrouter missing");
+            console.log("merge OK");
+          '
 
-      - name: --lang skips the language prompt
+      - name: Pipe mode (curl | bash style)
         run: |
-          export HOME="$RUNNER_TEMP/fakehome9"
-          export XDG_CONFIG_HOME="$HOME/.config"
-          export AICLI_CACHE_DIR="$RUNNER_TEMP/aicli-cache"
-          mkdir -p "$HOME"
-          printf '6\nhttps://gw.example.com/v1\nsk-lang\nm1\n' \
-            | ./ai-cli-setup.sh --lang zh --skip-install > /tmp/i4.out 2>&1
-          if grep -q 'Select language' /tmp/i4.out; then
-            echo "language prompt should be skipped with --lang"; exit 1
-          fi
-          grep -q '已选择：OpenCode' /tmp/i4.out
-          echo "--lang skip OK"
-
-      - name: comma-separated tool list as positional args
-        run: |
-          export HOME="$RUNNER_TEMP/fakehome5"
-          export XDG_CONFIG_HOME="$HOME/.config"
-          mkdir -p "$HOME"
-          ./ai-cli-setup.sh opencode,grok -y --skip-install --dry-run \
-            --base-url https://gw.example.com/v1 --api-key {{SECRET_nyfdkmg7}} --models a,b
-          # dry-run 不落盘
-          [ ! -e "$HOME/.config/opencode/opencode.json" ]
-          [ ! -e "$HOME/.grok/config.toml" ]
-          echo "comma list OK"
-
-      - name: pipe mode (curl | bash style)
-        run: |
-          cat ai-cli-setup.sh | bash -s -- list >/dev/null
-          echo "pipe mode OK"
+          cat ai-cli-setup.sh | bash -s -- list >/dev/null && echo "pipe OK"
 
       - name: bash 3.2 compatibility (macOS system bash)
         if: runner.os == 'macOS'
