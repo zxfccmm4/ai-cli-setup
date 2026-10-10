@@ -244,12 +244,21 @@ read_secret() {
     return $__rc
   fi
 
+  # 整个循环期间在 tty 驱动层关闭回显：逐字符 read -s 在两次调用之间
+  # 会短暂恢复回显，快速输入时可能闪现原始字符。Ctrl-C 等中断也要恢复。
+  local __stty_saved=""
+  __stty_saved="$(stty -g < "$__in" 2>/dev/null || true)"
+  if [ -n "$__stty_saved" ]; then
+    stty -echo < "$__in" 2>/dev/null || true
+    trap 'stty echo 2>/dev/null || true' INT TERM HUP
+  fi
+
   while :; do
     __c=""
     if [ "$__in" = "/dev/stdin" ]; then
-      IFS= read -r -s -n 1 __c || { __rc=$?; break; }
+      IFS= read -r -n 1 __c || { __rc=$?; break; }
     else
-      IFS= read -r -s -n 1 __c < "$__in" || { __rc=$?; break; }
+      IFS= read -r -n 1 __c < "$__in" || { __rc=$?; break; }
     fi
     # Enter（read 收到分隔符返回空）
     if [ -z "$__c" ]; then break; fi
@@ -282,6 +291,10 @@ read_secret() {
         ;;
     esac
   done
+  if [ -n "$__stty_saved" ]; then
+    stty "$__stty_saved" < "$__in" 2>/dev/null || true
+    trap - INT TERM HUP
+  fi
   printf '\n' > "$__out" 2>/dev/null || true
   printf -v "$__var" '%s' "$__buf"
   return 0
