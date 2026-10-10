@@ -898,6 +898,10 @@ tool_env_prefix() {
       [ -n "$BASE_URL" ] && out="$out CODEX_BASE_URL=$(printf '%q' "$BASE_URL")"
       [ -n "$API_KEY" ]  && out="$out CODEX_API_KEY=$(printf '%q' "$API_KEY")"
       [ -n "$MODEL" ]    && out="$out CODEX_MODEL=$(printf '%q' "$MODEL")"
+      # 凭据齐全 = 所有问题已代答，强制非交互（跳过非 sk- key 与最终确认提问）
+      if [ -n "$BASE_URL" ] && [ -n "$API_KEY" ]; then
+        out="$out CODEX_NONINTERACTIVE=1"
+      fi
       ;;
     grok)
       out="$out SKIP_GROK_SEARCH=$(printf '%q' "$([ "$GROK_SEARCH" = "on" ] && echo 0 || echo 1)")"

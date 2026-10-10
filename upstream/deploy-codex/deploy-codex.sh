@@ -85,7 +85,10 @@ die()   { printf "${C_RED}[FAIL]${C_NC} %s\n" "$*" >&2; exit 1; }
 # stdin 是 tty, 或能真正打开 /dev/tty 时视为可交互 (支持 curl | bash 管道中提问)
 # 注意: 仅 -r /dev/tty 不够 — CI/沙箱里设备节点可能存在但无法 open
 INTERACTIVE=1
-if [[ ! -t 0 ]]; then
+if [[ "${CODEX_NONINTERACTIVE:-0}" == "1" ]]; then
+    # 编排层已传入完整凭据（base_url/api_key/model 均已就绪），跳过所有确认提问
+    INTERACTIVE=0
+elif [[ ! -t 0 ]]; then
     if ! { exec 3<>/dev/tty; } 2>/dev/null; then
         INTERACTIVE=0
     else
