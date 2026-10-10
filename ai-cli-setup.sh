@@ -151,8 +151,10 @@ interactive_run() { [ "$NON_INTERACTIVE" -eq 0 ] && have_tty; }
 
 have_tty() {
   stdin_is_input && return 0
+  # 注意：exec 后只跟重定向时会永久作用于当前 shell，绝不能在这里带 2>/dev/null，
+  # 否则脚本后续所有 >&2 输出（菜单等）都会被静默丢进 /dev/null。
   { exec 9<>/dev/tty; } 2>/dev/null || return 1
-  exec 9>&- 9<&- 2>/dev/null || true
+  exec 9>&- 9<&-
   return 0
 }
 
