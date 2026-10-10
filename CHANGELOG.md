@@ -29,6 +29,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 🐛 Bug Fixes
 
+- 拉取模型列表时带上 API key（Bearer） ([`becd51e`](https://github.com/zxfccmm4/ai-cli-setup/commit/becd51e7f83b800b258ab54812d19a21f7999f2a))
 - 修复 bash 3.2 下 $var 紧跟中文导致的 unbound variable ([`a394b98`](https://github.com/zxfccmm4/ai-cli-setup/commit/a394b981fe78ddfe6d810cbb712f58fce7d28671))
 
 ### 📝 Documentation
