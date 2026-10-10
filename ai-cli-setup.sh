@@ -40,7 +40,7 @@ SKIP_INSTALL=0
 DRY_RUN=0
 FAIL_FAST=0
 ASSUME_TTY=0
-case "$(printf '%s' "${AICLI_ASSUME_TTY:-0}" | tr '[:upper:]' '[:lower:]')" in
+case "$(printf '%s' "${AICLI_ASSUME_TTY:-0}" | tr 'A-Z' 'a-z')" in
   1|true|yes|on) ASSUME_TTY=1 ;;
 esac
 
@@ -184,7 +184,7 @@ confirm() {
 # ============================================================
 OS=""; ARCH=""
 case "$(uname -s)" in
-  Darwin) OS=macos ;; Linux) OS=linux ;; *) OS="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+  Darwin) OS=macos ;; Linux) OS=linux ;; *) OS="$(uname -s | tr 'A-Z' 'a-z')" ;;
 esac
 case "$(uname -m)" in
   x86_64|amd64) ARCH=x86_64 ;; arm64|aarch64) ARCH=arm64 ;; *) ARCH="$(uname -m)" ;;
@@ -303,19 +303,33 @@ install_opencode() {
 # npm 重装会把 bin 换位置，bash 缓存的旧路径（如 /usr/local/bin/codex）导致
 # "No such file or directory"，hash -r 后用真实路径再探测。
 post_install_check() {
-  local a="$1" bin path
+  local a="$1" bin path cand bindir
   bin="$(agent_bin "$a")"
   hash -r 2>/dev/null || true
   if path="$(command -v "$bin" 2>/dev/null)" && [ -x "$path" ]; then
     ok "$(agent_title "$a") -> $path"
-  else
-    # 二进制可能在本次安装新增的 PATH 目录里（如 ~/.local/bin），当前 shell 尚未包含
-    local cand
-    for cand in "$HOME/.local/bin/$bin" "$HOME/.grok/bin/$bin" "$HOME/.bun/bin/$bin" "$HOME/.opencode/bin/$bin"; do
-      if [ -x "$cand" ]; then ok "$(agent_title "$a") -> $cand"; return 0; fi
-    done
-    warn "$(lc "$bin not on PATH yet; open a new shell or re-login" "$bin 尚不在 PATH；请新开终端或重新登录")"
+    return 0
   fi
+  # 二进制可能在本次安装新增的 PATH 目录里，当前 shell 尚未包含
+  for bindir in "$HOME/.local/bin" "$HOME/.grok/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
+    if [ -x "$bindir/$bin" ]; then
+      ok "$(agent_title "$a") -> $bindir/$bin"
+      # 确保以后每个 shell 都能找到：写入 shell rc（若尚未包含）
+      local sub="${bindir#"$HOME"/}"
+      local line='export PATH="$HOME/'$sub':$PATH"'
+
+      local rcfile=""
+      for cand in "$HOME/.bashrc" "$HOME/.zshrc"; do [ -f "$cand" ] && rcfile="$cand" && break; done
+      # OpenWrt 的 ash 不读 .bashrc；有 /etc/profile 时通常安装器已写
+      if [ -n "$rcfile" ] && ! grep -q "${bindir#"$HOME"/}" "$rcfile" 2>/dev/null; then
+        printf '\n# added by ai-cli-setup\n%s\n' "$line" >> "$rcfile"
+        info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
+      fi
+      info "$(lc "current shell: run this first" "当前终端先执行")  export PATH=\"$bindir:\$PATH\""
+      return 0
+    fi
+  done
+  warn "$(lc "$bin not on PATH yet; open a new shell or re-login" "$bin 尚不在 PATH；请新开终端或重新登录")"
 }
 
 install_agent() {
@@ -471,7 +485,8 @@ print(json.dumps(out,indent=2))
 # defaultModel 为纯模型 id（不带 provider 前缀）
 build_pi_settings_json() {
   local first=""
-  [ -n "$MODELS" ] && first="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d '[:space:]')"
+  # BusyBox 的 tr 不认 [:space:]（会当字面字符集删字母），用显式空白字符
+  [ -n "$MODELS" ] && first="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
   [ -z "$first" ] && first="$MODEL"
   [ -z "$first" ] && return 1
   printf '{\n  "defaultProvider": "%s",\n  "defaultModel": "%s"\n}\n' \
@@ -584,7 +599,7 @@ write_opencode() {
   mkdir -p "$(dirname "$f")"
   backup_file "$f"
   local provider provider_name npm_pkg
-  case "$(printf '%s' "$BASE_URL" | tr '[:upper:]' '[:lower:]')" in
+  case "$(printf '%s' "$BASE_URL" | tr 'A-Z' 'a-z')" in
     *openrouter.ai*) provider="openrouter"; provider_name="OpenRouter"; npm_pkg="" ;;
     *api.deepseek.com*) provider="deepseek"; provider_name="DeepSeek"; npm_pkg="@ai-sdk/openai-compatible" ;;
     *api.openai.com*) provider="openai"; provider_name="OpenAI"; npm_pkg="" ;;
@@ -597,7 +612,7 @@ write_opencode() {
   esac
   # V2 检测：用户显式 AICLI_OPENCODE_V2=1，或已装二进制 >= 2.0，或配置里已有 providers 键
   local ocv=1
-  local prov_upper; prov_upper="$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')"
+  local prov_upper; prov_upper="$(printf '%s' "$provider" | tr 'a-z-' 'A-Z_')"
   if [ -n "${AICLI_OPENCODE_V2:-}" ]; then
     case "$AICLI_OPENCODE_V2" in 1|true|yes) ocv=2 ;; *) ocv=1 ;; esac
   elif have opencode; then
@@ -694,7 +709,7 @@ PYK
         printf '      "name": "%s",\n' "$provider_name"
         printf '      "package": "aisdk:@ai-sdk/openai-compatible",\n'
         printf '      "settings": { "baseURL": "%s", "apiKey": "{env:AICLI_%s_API_KEY}" },\n' \
-          "$(printf '%s' "$BASE_URL" | sed 's/"/\\"/g')" "$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')"
+          "$(printf '%s' "$BASE_URL" | sed 's/"/\\"/g')" "$(printf '%s' "$provider" | tr 'a-z-' 'A-Z_')"
         printf '      "models": {\n'
         first=1
         for m in $(printf '%s' "$MODELS" | tr ',' ' '); do
@@ -763,10 +778,10 @@ agent_count() { local a n=0; for a in $ALL_AGENTS; do n=$((n+1)); done; printf '
 parse_selection() {
   local spec="$1" tok lo hi i out="" a max
   spec="$(printf '%s' "$spec" | tr ',' ' ')"
-  [ -n "$(printf '%s' "$spec" | tr -d '[:space:]')" ] || return 1
+  [ -n "$(printf '%s' "$spec" | tr -d ' \t\r\n')" ] || return 1
   max="$(agent_count)"
   for tok in $spec; do
-    tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
+    tok="$(printf '%s' "$tok" | tr 'A-Z' 'a-z')"
     case "$tok" in a|all|'*') printf '%s' "$ALL_AGENTS" | tr ' ' ','; return 0 ;; esac
     [ "$tok" = "0" ] || [ "$tok" = "$((max + 1))" ] && { printf '%s' "$ALL_AGENTS" | tr ' ' ','; return 0; }
     case "$tok" in *-*) lo="${tok%%-*}"; hi="${tok##*-}" ;; *) lo="$tok"; hi="$tok" ;; esac
@@ -789,7 +804,7 @@ prompt_language() {
   printf '\n%s\n\n' "${BOLD}Select language  /  选择语言${RESET}" >&2
   printf '  1) English\n  2) 中文 (Chinese)\n\n' >&2
   read_line ans "choose / 请选择 " 
-  case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
+  case "$(printf '%s' "$ans" | tr 'A-Z' 'a-z')" in
     2|zh|cn|chinese|中文) LANG_CODE="zh" ;;
     1|en|english) LANG_CODE="en" ;;
   esac
@@ -874,7 +889,7 @@ collect_credentials() {
   fi
   # 单默认模型（claude/codex/grok/opencode）：拉到列表时默认第一个
   if [ "$need_model" -eq 1 ] && [ -z "$MODEL" ]; then
-    if [ -n "$MODELS" ]; then MODEL="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d '[:space:]')"
+    if [ -n "$MODELS" ]; then MODEL="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
     elif [ "$NON_INTERACTIVE" -eq 0 ]; then
       read_line MODEL "$(lc 'default model id (for claude/codex/grok/opencode)' '默认模型 id（claude/codex/grok/opencode 用）') "
     fi
