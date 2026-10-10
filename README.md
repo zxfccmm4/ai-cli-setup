@@ -162,12 +162,18 @@ git push origin v1.0.0
 | `VERSION.txt` | 版本 / 提交 / 上游快照信息 |
 | `CHANGELOG.md` `README.md` `LICENSE` | 随附文档 |
 
+> Release 里的 `ai-cli-setup.sh` 可以单独使用：它在找不到本地 `upstream/`
+> 快照时会自动从 GitHub 下载上游脚本（失败回退 jsDelivr）。
+> 注意 GitHub 下载的 asset 不带可执行位，用前 `chmod +x`。
+
 Release notes 自动从 `CHANGELOG.md` 摘出对应版本那一节。
 也可在 Actions 页面手动 `workflow_dispatch` 只做构建校验（不发布）。
 
 校验下载的产物：
 
 ```bash
+# GitHub 下载的 asset 不带可执行位，先补上
+chmod +x ai-cli-setup.sh changelog.sh
 sha256sum -c SHA256SUMS
 ```
 
