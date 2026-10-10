@@ -255,9 +255,10 @@ ensure_npm() { ensure_node; have npm || die "$(lc 'npm not found' '未找到 npm
 
 install_pi() {
   if have pi; then info "$(lc 'pi already installed, updating' 'pi 已安装，检查更新')"; pi update >/dev/null 2>&1 || true; return 0; fi
-  if have curl; then curl -fsSL https://pi.dev/install.sh | sh
-  elif have wget; then wget -qO- https://pi.dev/install.sh | sh
-  else ensure_npm && npm install -g --ignore-scripts @earendil-works/pi-coding-agent; fi
+  # npm 优先：完全非交互。官方 install.sh 末尾会问 "Start pi now?" 且默认 Y，
+  # 管道模式下会把 pi 启动进安装流程卡住。
+  ensure_npm && npm install -g --ignore-scripts @earendil-works/pi-coding-agent && return 0
+  have curl && curl -fsSL https://pi.dev/install.sh | sh
 }
 install_omo() {
   export OMO_INSTALL_ALLOW_SUDO=1   # 服务器常以 root 运行
