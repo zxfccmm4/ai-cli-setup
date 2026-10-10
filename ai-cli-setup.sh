@@ -576,30 +576,91 @@ write_opencode() {
       provider_name="$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#/.*$##')"
       npm_pkg="@ai-sdk/openai-compatible" ;;
   esac
+  # V2 检测：用户显式 AICLI_OPENCODE_V2=1，或已装二进制 >= 2.0，或配置里已有 providers 键
+  local ocv=1
+  local prov_upper; prov_upper="$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')"
+  if [ -n "${AICLI_OPENCODE_V2:-}" ]; then
+    case "$AICLI_OPENCODE_V2" in 1|true|yes) ocv=2 ;; *) ocv=1 ;; esac
+  elif have opencode; then
+    ocv="$(opencode --version 2>/dev/null | grep -qE '^2\.' && printf 2 || printf 1)"
+  elif grep -q '"providers"' "$f" 2>/dev/null; then
+    ocv=2
+  fi
+
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-o.XXXXXX")"
-  OC_FILE="$f" OC_OUT="$tmp" OC_PROVIDER="$provider" OC_NAME="$provider_name" OC_NPM="$npm_pkg" \
-  OC_BASE="$BASE_URL" OC_KEY="$API_KEY" OC_MODELS="$MODELS" OC_DEFAULT="$model" \
-  node -e '
-    const fs=require("fs"),env=process.env;
-    let cfg={};
-    if(fs.existsSync(env.OC_FILE)){try{cfg=JSON.parse(fs.readFileSync(env.OC_FILE,"utf8"))}catch(e){}}
-    if(!cfg||typeof cfg!=="object"||Array.isArray(cfg)) cfg={};
-    cfg.$schema=cfg.$schema||"https://opencode.ai/config.json";
-    cfg.provider=cfg.provider||{};
-    const p=cfg.provider[env.OC_PROVIDER]=cfg.provider[env.OC_PROVIDER]||{};
-    if(env.OC_NAME)p.name=env.OC_NAME;
-    if(env.OC_NPM)p.npm=env.OC_NPM;
-    p.options=Object.assign({},p.options,{baseURL:env.OC_BASE,apiKey:env.OC_KEY});
-    const models=(env.OC_MODELS||"").split(",").map(s=>s.trim()).filter(Boolean);
-    p.models=p.models||{};
-    for(const m of models){if(!p.models[m])p.models[m]={name:m.split("/").pop()}}
-    if(env.OC_DEFAULT)cfg.model=env.OC_PROVIDER+"/"+env.OC_DEFAULT;
-    fs.writeFileSync(env.OC_OUT,JSON.stringify(cfg,null,2)+"\n");
-  '
+  if [ "$ocv" = "2" ]; then
+    # ---- OpenCode V2：providers/settings/package + {env:} 凭据引用 ----
+    # key 不落盘：写入 {env:VAR} 引用，并把真实 key 放进该 env 变量。
+    # shellcheck disable=SC2155
+    local env_var="AICLI_${prov_upper}_API_KEY"
+    OC_FILE="$f" OC_OUT="$tmp" OC_PROVIDER="$provider" OC_NAME="$provider_name" \
+    OC_PACKAGE="aisdk:${npm_pkg:-@ai-sdk/openai-compatible}" \
+    OC_BASE="$BASE_URL" OC_KEYREF="{env:$env_var}" OC_MODELS="$MODELS" OC_DEFAULT="$model" \
+    node -e '
+      const fs=require("fs"),env=process.env;
+      let cfg={};
+      if(fs.existsSync(env.OC_FILE)){try{cfg=JSON.parse(fs.readFileSync(env.OC_FILE,"utf8"))}catch(e){}}
+      if(!cfg||typeof cfg!=="object"||Array.isArray(cfg)) cfg={};
+      cfg.$schema=cfg.$schema||"https://opencode.ai/config.json";
+      cfg.providers=cfg.providers||{};
+      const p=cfg.providers[env.OC_PROVIDER]=cfg.providers[env.OC_PROVIDER]||{};
+      if(env.OC_NAME)p.name=env.OC_NAME;
+      p.package=env.OC_PACKAGE;
+      p.settings=Object.assign({},p.settings,{baseURL:env.OC_BASE,apiKey:env.OC_KEYREF});
+      const models=(env.OC_MODELS||"").split(",").map(s=>s.trim()).filter(Boolean);
+      p.models=p.models||{};
+      for(const m of models){if(!p.models[m])p.models[m]={name:m.split("/").pop()}}
+      if(env.OC_DEFAULT)cfg.model=env.OC_PROVIDER+"/"+env.OC_DEFAULT;
+      fs.writeFileSync(env.OC_OUT,JSON.stringify(cfg,null,2)+"\n");
+    '
+    if [ "$DRY_RUN" -eq 0 ]; then
+      # 把真实 key 写入 shell 配置（export AICLI_XXX_API_KEY），配置文件只留引用
+      local shellrc=""
+      for cand in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        [ -f "$cand" ] && shellrc="$cand" && break
+      done
+      [ -n "$shellrc" ] || shellrc="$HOME/.bashrc"
+      if ! grep -q "^export ${env_var}=" "$shellrc" 2>/dev/null; then
+        printf '\n# %s gateway key (added by ai-cli-setup)\nexport %s=%s\n' "$provider" "$env_var" "'$API_KEY'" >> "$shellrc"
+        info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 $env_var（key 不写入 opencode.json）")"
+      else
+        # 更新已有值
+        python3 - "$shellrc" "$env_var" "$API_KEY" <<'PYK' 2>/dev/null || true
+import sys, re
+path, var, val = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+s = re.sub(r"^export %s=.*$" % var, "export %s='%s'" % (var, val), s, flags=re.M)
+open(path, "w").write(s)
+PYK
+        info "$(lc "updated $env_var in $shellrc" "已更新 $shellrc 中的 $env_var")"
+      fi
+    fi
+  else
+    # ---- OpenCode V1：provider/options/npm，key 直写 ----
+    OC_FILE="$f" OC_OUT="$tmp" OC_PROVIDER="$provider" OC_NAME="$provider_name" OC_NPM="$npm_pkg" \
+    OC_BASE="$BASE_URL" OC_KEY="$API_KEY" OC_MODELS="$MODELS" OC_DEFAULT="$model" \
+    node -e '
+      const fs=require("fs"),env=process.env;
+      let cfg={};
+      if(fs.existsSync(env.OC_FILE)){try{cfg=JSON.parse(fs.readFileSync(env.OC_FILE,"utf8"))}catch(e){}}
+      if(!cfg||typeof cfg!=="object"||Array.isArray(cfg)) cfg={};
+      cfg.$schema=cfg.$schema||"https://opencode.ai/config.json";
+      cfg.provider=cfg.provider||{};
+      const p=cfg.provider[env.OC_PROVIDER]=cfg.provider[env.OC_PROVIDER]||{};
+      if(env.OC_NAME)p.name=env.OC_NAME;
+      if(env.OC_NPM)p.npm=env.OC_NPM;
+      p.options=Object.assign({},p.options,{baseURL:env.OC_BASE,apiKey:env.OC_KEY});
+      const models=(env.OC_MODELS||"").split(",").map(s=>s.trim()).filter(Boolean);
+      p.models=p.models||{};
+      for(const m of models){if(!p.models[m])p.models[m]={name:m.split("/").pop()}}
+      if(env.OC_DEFAULT)cfg.model=env.OC_PROVIDER+"/"+env.OC_DEFAULT;
+      fs.writeFileSync(env.OC_OUT,JSON.stringify(cfg,null,2)+"\n");
+    '
+  fi
   [ -s "$tmp" ] || { err "$(lc 'failed to build opencode.json (need node)' '生成 opencode.json 失败（需要 node）')"; rm -f "$tmp"; return 1; }
   if [ "$DRY_RUN" -eq 1 ]; then info "dry-run: $f"; rm -f "$tmp"; return 0; fi
   write_600 "$f" "$tmp"
-  ok "$(lc "wrote $f" "已写入 $f")"
+  ok "$(lc "wrote $f" "已写入 $f") [v$ocv]"
   info "$(lc 'provider' 'provider')  $provider  $(lc 'default model' '默认模型')  ${model:-(none)}"
 }
 
@@ -826,6 +887,7 @@ ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
 ${BOLD}$(lc 'ENVIRONMENT' '环境变量')${RESET}
   AICLI_BASE_URL AICLI_API_KEY AICLI_MODELS AICLI_MODEL AICLI_LANG
   AICLI_ASSUME_TTY GROK_ALIAS GROK_CONTEXT_WINDOW CODEX_WIRE_API
+  AICLI_OPENCODE_V2   (1 = force opencode v2 config format)
 
 ${BOLD}$(lc 'CONFIG FILES' '配置文件')${RESET}
   pi       ~/.pi/agent/{models,settings}.json

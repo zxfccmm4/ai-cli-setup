@@ -68,7 +68,7 @@ API key: sk-************xyz            （显式掩码：前 3 + 后 3）
 | `claude` | `claude.ai/install.sh`（回退 npm） | `~/.claude/settings.json` | **仅 Linux/WSL 安装** |
 | `codex` | npm `@openai/codex` | `~/.codex/{config.toml,auth.json}` | |
 | `grok` | `x.ai/cli/install.sh` | `~/.grok/config.toml` | 装到 `~/.grok/bin` |
-| `opencode` | `opencode.ai/install`（回退 npm） | `~/.config/opencode/opencode.json` | 合并写入不覆盖 |
+| `opencode` | `opencode.ai/install`（回退 npm） | `~/.config/opencode/opencode.json` | 自动检测 V1/V2 格式；V2 时 key 走 `{env:}` 引用不落盘 |
 
 macOS 上 `claude` 跳过安装（上游限制），但配置照常写入。
 
@@ -119,6 +119,7 @@ macOS 上 `claude` 跳过安装（上游限制），但配置照常写入。
 `AICLI_BASE_URL` `AICLI_API_KEY` `AICLI_MODELS` `AICLI_MODEL`
 `AICLI_LANG`（en/zh）`AICLI_ASSUME_TTY`（1=stdin 当交互）
 `GROK_ALIAS` `GROK_CONTEXT_WINDOW` `CODEX_WIRE_API`（responses/chat）
+`AICLI_OPENCODE_V2`（1=强制写 V2 格式；默认按已装版本自动检测）
 
 ## 常见问题
 
