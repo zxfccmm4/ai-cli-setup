@@ -289,6 +289,25 @@ install_opencode() {
   run_official https://opencode.ai/install || ensure_npm && npm install -g opencode-ai
 }
 
+# 安装后清 bash 命令路径缓存并确认二进制真实可用：
+# npm 重装会把 bin 换位置，bash 缓存的旧路径（如 /usr/local/bin/codex）导致
+# "No such file or directory"，hash -r 后用真实路径再探测。
+post_install_check() {
+  local a="$1" bin path
+  bin="$(agent_bin "$a")"
+  hash -r 2>/dev/null || true
+  if path="$(command -v "$bin" 2>/dev/null)" && [ -x "$path" ]; then
+    ok "$(agent_title "$a") -> $path"
+  else
+    # 二进制可能在本次安装新增的 PATH 目录里（如 ~/.local/bin），当前 shell 尚未包含
+    local cand
+    for cand in "$HOME/.local/bin/$bin" "$HOME/.grok/bin/$bin" "$HOME/.bun/bin/$bin"; do
+      if [ -x "$cand" ]; then ok "$(agent_title "$a") -> $cand"; return 0; fi
+    done
+    warn "$(lc "$bin not on PATH yet; open a new shell or re-login" "$bin 尚不在 PATH；请新开终端或重新登录")"
+  fi
+}
+
 install_agent() {
   local a="$1"
   step "$(lc "install $(agent_title "$a")" "安装 $(agent_title "$a")")"
@@ -302,6 +321,7 @@ install_agent() {
     grok) install_grok ;;
     opencode) install_opencode ;;
   esac
+  post_install_check "$a"
 }
 
 # ============================================================
