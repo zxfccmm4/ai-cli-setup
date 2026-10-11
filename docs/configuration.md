@@ -4,86 +4,146 @@
 
 ---
 
-## 1. 参数 → 环境变量映射
+## 1. 每个 agent 写什么文件
 
-脚本把你统一输入的凭据，翻译成各上游认识的名字：
+| Agent | 文件 | 格式 | 默认模型位置 |
+|---|---|---|---|
+| `pi` | `~/.pi/agent/{models,settings}.json` | JSON | `settings.json: defaultModel` |
+| `omo` | `~/.omo/agent/{models,settings}.json` | JSON | `settings.json: defaultModel` |
+| `omp` | `~/.omp/agent/{models.yml,config.yml}` | YAML | `config.yml: modelRoles.default` |
+| `claude` | `~/.claude/settings.json` | JSON | `env.ANTHROPIC_MODEL` |
+| `codex` | `~/.codex/{config.toml,auth.json}` | TOML / JSON | `model` |
+| `grok` | `~/.grok/config.toml` | TOML | `[models].default`（别名） |
+| `opencode` | `~/.config/opencode/opencode.json` | JSON | `model` |
 
-| 统一参数 | pi | omo | claude | codex | grok | opencode |
-|---|---|---|---|---|---|---|
-| `--base-url` | `PISETUP_BASE_URL` | `OMO_BASE_URL` | `CLAUDE_BASE_URL` | `CODEX_BASE_URL` | 写 `config.toml` | 写 `opencode.json` |
-| `--api-key` | `PISETUP_API_KEY` | `OMO_API_KEY` | `CLAUDE_API_KEY` | `CODEX_API_KEY` | 写 `config.toml` | 写 `opencode.json` |
-| `--models` | `PISETUP_MODELS` | `OMO_MODELS` | — | — | — | `provider.models` |
-| `--model` | — | — | `CLAUDE_MODEL` | `CODEX_MODEL` | 写 `config.toml` | `model`（默认取 models 第一个） |
-| `--lang` | `PISETUP_LANG` | `OMO_LANG` | `CLAUDE_LANG` | — | — | — |
-
-也就是说：**pi / omo / claude / codex 是「传环境变量」，grok / opencode 是「本脚本直接写文件」。**
+全部由本脚本直接生成，**不调用任何上游配置脚本**。写入前会备份为
+`<文件>.bak.<时间戳>`，写入后 `chmod 600`。
 
 ---
 
-## 2. 各工具写什么文件
+## 2. 参数 → 各 agent 的落点
 
-### `pi` → `~/.pi/agent/models.json` + `settings.json`
+| 统一参数 | pi / omo | omp | claude | codex | grok | opencode |
+|---|---|---|---|---|---|---|
+| `--base-url` | `providers.<host>.baseUrl` | `providers.<host>.baseUrl` | `env.ANTHROPIC_BASE_URL`（剥掉尾部 `/v1`） | `model_providers.OpenAI.base_url`（剥掉 `/v1`） | `[model.<alias>].base_url` | `<provider>.options.baseURL` |
+| `--api-key` | `providers.<host>.apiKey` | `providers.<host>.apiKey` | `env.ANTHROPIC_AUTH_TOKEN` | `auth.json: OPENAI_API_KEY` | `[model.<alias>].api_key` | `options.apiKey` / `{env:…}`（V2） |
+| `--models a,b` | `providers.<host>.models[]` | `providers.<host>.models[]` | — | — | — | `<provider>.models{}` |
+| `--model ID` | `settings.json: defaultModel` | `config.yml: modelRoles.default` | `env.ANTHROPIC_MODEL` | `model` / `review_model` | `[models].default` 别名 | `model: <provider>/<ID>` |
+| `--lang en\|zh` | 仅界面语言 | 仅界面语言 | 仅界面语言 | 仅界面语言 | 仅界面语言 | 仅界面语言 |
 
-由上游 `pi-config.mjs` 写入。整合脚本只传参，其余交给上游。
+`--models` 缺省时会请求 `<base-url>/v1/models` 自动拉取（见第 3 节）；
+`--model` 缺省时取 `--models` 的第一个。
 
-### `omo` → `~/.omo/agent/*` + `~/.omo/omo.jsonc`
+---
 
-同上，由 `omo-config.mjs` 写入。多智能体（`--preset` / `--agent` / `--category`）等
-高级参数目前需要通过 `--` 透传：
+## 3. 各 agent 的产物样例
 
-```bash
-./ai-cli-setup.sh omo -- --preset kimi-glm --memory on
+### `pi` / `omo`
+
+```json
+{
+  "providers": {
+    "gw-example-com": {
+      "baseUrl": "https://gw.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "sk-xxxx",
+      "models": [{ "id": "gpt-5.6", "name": "gpt-5.6" }]
+    }
+  }
+}
 ```
 
-### `claude` → shell 配置 或 `~/.claude/settings.json`
+`settings.json` 里 `defaultProvider` + `defaultModel`（纯模型 id，不带 provider 前缀）。
 
-上游支持 `--config-mode shell|settings`，默认 `shell`（写进 `.zshrc` / `.bashrc` 的
-`ANTHROPIC_*` 变量）。**仅在 Linux / WSL 可用** —— macOS 上会明确报错退出。
+### `omp` → `~/.omp/agent/models.yml`
 
-### `codex` → `~/.codex/config.toml` + `~/.codex/auth.json`
+```yaml
+providers:
+  gw-example-com:
+    baseUrl: "https://gw.example.com/v1"
+    api: openai-completions
+    apiKey: "sk-xxxx"
+    models:
+      - id: "gpt-5.6"
+        name: "gpt-5.6"
+```
 
-上游生成，包含 `model_provider` / `wire_api` / `model_catalog_json` 等。
-写入前用 `python3` 校验 TOML/JSON，失败**不会覆盖原文件**。
-Linux 上需要 root（脚本会提示用 `sudo` 重跑）。
+`~/.omp/agent/config.yml` 只改 `modelRoles.default`，其它设置（`theme`、
+`setupVersion`、`smol` / `slow` 角色等）原样保留：
+
+```yaml
+modelRoles:
+  default: gw-example-com/gpt-5.6
+```
+
+> **注意**：omp 的 `models.yml` **不做环境变量插值**（`apiKey: ${VAR}` 会被原样发送），
+> 所以密钥是明文写入的，脚本强制 `600`。omp 也没有 `{env:}` 之类的引用语法。
+>
+> omp 已安装时，脚本用 `omp config set modelRoles`（JSON 合并）来改默认模型，
+> 能保留 `smol`/`slow` 等其它角色并通过 schema 校验；omp 不可用时退回文本级替换，
+> 同样只动 `default` 那一行。
+
+### `claude` → `~/.claude/settings.json`
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://gw.example.com",
+    "ANTHROPIC_AUTH_TOKEN": "sk-xxxx",
+    "ANTHROPIC_MODEL": "gpt-5.6"
+  }
+}
+```
+
+Claude Code 自己在 base 后面拼 `/v1/messages`，所以脚本**必须**写不带 `/v1` 的根地址。
+已有文件里的其它键（`permissions`、`hooks` …）会被保留。
+
+### `codex` → `~/.codex/config.toml` + `auth.json`
+
+```toml
+model_provider = "OpenAI"
+model = "gpt-5.6"
+review_model = "gpt-5.6"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://gw.example.com"
+wire_api = "responses"
+requires_openai_auth = true
+```
+
+`wire_api` 可用 `CODEX_WIRE_API=chat` 切换（部分网关只支持 chat completions）。
 
 ### `grok` → `~/.grok/config.toml`
-
-**这是本脚本自己生成的**（上游 `install-config.sh` 只有交互向导）。
-实际产物（`--grok-alias MyGrok --grok-search on`）：
 
 ```toml
 [cli]
 installer = "internal"
 
 [models]
-default = "MyGrok"
-default_reasoning_effort = "high"
-web_search = "MyGrok"          # 仅 --grok-search on 时出现
+default = "main"
 
-[model.MyGrok]
-model = "grok-4.7"             # 由 --model 控制
+[model.main]
+model = "grok-4.7"
 base_url = "https://gw.example.com/v1"
-name = "grok-4.7"
 api_key = "sk-xxxx"
-context_window = 500000        # AICLI_GROK_CONTEXT_WINDOW 可覆盖
+context_window = 500000
 supports_reasoning_effort = true
 reasoning_efforts = ["low", "medium", "high"]
-api_backend = "responses"          # 仅 search on
-supports_backend_search = true     # 仅 search on
 
 [features]
 telemetry = false
 feedback = false
 ```
 
-安全措施：原子写入（先写临时文件再 `mv`）、`chmod 600`、
-原文件自动备份为 `config.toml.bak.<时间戳>`。
+别名可用 `--grok-alias` / `GROK_ALIAS` 改，上下文窗口用 `GROK_CONTEXT_WINDOW`。
 
 ### `opencode` → `~/.config/opencode/opencode.json`
 
 **合并写入**，已有的 `plugin` / `mcp` / 其他 provider 全部保留。
+格式分两代，脚本自动选择：
 
-未知网关的产物：
+**V1**（`provider` + `options`，密钥直写）：
 
 ```json
 {
@@ -92,9 +152,26 @@ feedback = false
     "gw-example-com": {
       "name": "gw.example.com",
       "npm": "@ai-sdk/openai-compatible",
-      "options": {
+      "options": { "baseURL": "https://gw.example.com/v1", "apiKey": "sk-xxxx" },
+      "models": { "gpt-5.6": { "name": "gpt-5.6" } }
+    }
+  },
+  "model": "gw-example-com/gpt-5.6"
+}
+```
+
+**V2**（`providers` + `settings` + `package`，密钥用 `{env:}` 引用）：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "gw-example-com": {
+      "name": "gw.example.com",
+      "package": "aisdk:@ai-sdk/openai-compatible",
+      "settings": {
         "baseURL": "https://gw.example.com/v1",
-        "apiKey": "sk-xxxx"
+        "apiKey": "{env:AICLI_GW_EXAMPLE_COM_API_KEY}"
       },
       "models": { "gpt-5.6": { "name": "gpt-5.6" } }
     }
@@ -103,119 +180,78 @@ feedback = false
 }
 ```
 
-`provider` id 会**自动识别**常见网关：
+V2 下真实密钥写进 shell 配置（`export AICLI_<PROVIDER>_API_KEY='…'`），
+`opencode.json` 里只有引用——重跑会**原地更新**那一行，不会堆叠。
 
-| base-url 含 | provider id | npm |
+**V1 / V2 的选择顺序**：
+
+1. `AICLI_OPENCODE_V2=1` → V2（`=0` → V1）
+2. 已安装的 `opencode --version` 主版本 ≥ 2 → V2
+3. 现有 `opencode.json` 里已有 `providers` 键 → V2
+4. 否则 V1
+
+> `--dry-run` 下不执行 `opencode --version`（该命令会自建 cache/state/log 目录），
+> 只按第 3 条判断。
+
+**provider id 自动识别**：
+
+| base-url 含 | provider id | package |
 |---|---|---|
 | `openrouter.ai` | `openrouter` | *(内置)* |
 | `api.deepseek.com` | `deepseek` | `@ai-sdk/openai-compatible` |
 | `api.openai.com` | `openai` | *(内置)* |
 | `generativelanguage.googleapis.com` | `google` | *(内置)* |
 | `open.bigmodel.cn` | `zhipuglm` | `@ai-sdk/openai-compatible` |
-| 其他 | 由 host 推导，如 `my-custom-gw-io` | `@ai-sdk/openai-compatible` |
-
-想手动指定：
-
-```bash
-./ai-cli-setup.sh opencode -y --base-url https://my.gw.io/v1 --api-key sk-x \
-  --models a,b \
-  --opencode-provider mygw \
-  --opencode-provider-name "My Gateway" \
-  --opencode-npm @ai-sdk/openai-compatible
-```
+| 其他 | 由 host 推导，如 `gw-example-com` | `@ai-sdk/openai-compatible` |
 
 ---
 
-## 3. 模型列表是怎么来的
+## 4. 模型列表是怎么来的
 
 ```bash
 ./ai-cli-setup.sh all
 ```
 
-1. 脚本请求 `<base-url>/v1/models`
-   （如果 base-url 已以 `/v1` 结尾，就请求 `<base-url>/models`）
-2. 用 `jq` → `python3` → `node` 里**第一个可用的**解析
-3. 交互模式下把列表打印出来，回车 = 全部注册；非交互模式直接全用
+1. 请求 `<base-url>/models`（base-url 已以 `/v1` 结尾）或 `<base-url>/v1/models`
+2. 带 `Authorization: Bearer <api-key>`
+3. 依次尝试 `jq` → `node` → `python3` 解析
+4. 交互模式下打印列表，回车 = 全部注册；非交互模式直接全用
 
-拉不到就手动指定：
-
-```bash
---models gpt-5.6,gpt-5.5,claude-sonnet-4-5
-```
+拉不到就手动指定：`--models gpt-5.6,gpt-5.5,claude-sonnet-4-5`。
 
 ---
 
-## 4. 完整参数表
+## 5. 完整参数表
 
 | 参数 | 说明 |
 |---|---|
 | `-y, --yes` | 非交互；缺凭据直接报错 |
-| `-i, --interactive` | 强制走上游向导 |
-| `--delegate` | 不收集凭据，完全交给上游向导 |
-| `-l, --lang en\|zh` | 输出与向导语言（默认按系统 locale） |
+| `-l, --lang en\|zh` | 界面语言（默认按系统 locale） |
 | `--base-url URL` | 接口地址 |
-| `--api-key KEY` / `--token` | 密钥 |
-| `--models a,b,c` | 注册的模型 id（pi / omo / opencode） |
-| `--model ID` | 默认模型（claude / codex / grok / opencode） |
-| `--grok-alias NAME` | Grok 本地模型别名（默认 `Steve`） |
-| `--grok-search on\|off` | 开启服务端 Search Tool |
-| `--opencode-provider ID` | OpenCode provider id |
-| `--opencode-provider-name` | 显示名 |
-| `--opencode-npm` | SDK 包名 |
-| `--opencode-method official\|npm` | OpenCode 安装方式 |
-| `--opencode-config FILE` | opencode.json 路径 |
-| `--only a,b` | 只处理这些工具 |
-| `--skip a,b` | 跳过这些工具 |
+| `--api-key KEY` | 密钥（交互输入时掩码显示） |
+| `--models a,b,c` | 注册的模型 id（pi / omo / omp / opencode） |
+| `--model ID` | 默认模型（claude / codex / grok / omp / opencode） |
+| `--grok-alias NAME` | Grok 本地模型别名（默认 `main`） |
 | `--skip-install` | 只改配置，不装/更新 CLI |
-| `--ref REF` | 上游 git ref（默认 `main`） |
-| `--pin` | 用已验证的固定提交（见 [VERSIONS.md](../VERSIONS.md)） |
-| `--refresh` | 忽略缓存重新下载 |
-| `--no-cache` | 不用也不写缓存 |
+| `--dry-run` | 只打印计划，零落盘 |
 | `--fail-fast` | 第一个失败就停 |
-| `--dry-run` | 只打印，不落盘 |
-| `--` | 之后的参数原样透传给上游 |
+| `--assume-tty` | 把 stdin 当交互输入（容器 / CI） |
+| `list` / `doctor` / `help` | 子命令 |
+
+位置参数：`pi`、`omo`、`omp`、`claude`、`codex`、`grok`、`opencode`、
+`all`，也可用逗号组合（`pi,opencode`）。
 
 ---
 
-## 5. 环境变量
-
-除了命令行参数，也支持环境变量（适合 CI）：
+## 6. 环境变量
 
 ```
 AICLI_BASE_URL   AICLI_API_KEY   AICLI_MODELS   AICLI_MODEL   AICLI_LANG
-AICLI_REF        AICLI_CACHE_DIR AICLI_RAW_HOST AICLI_OWNER
-AICLI_OPENCODE_CONFIG   AICLI_OPENCODE_PROVIDER   AICLI_OPENCODE_METHOD
+AICLI_ASSUME_TTY AICLI_OPENCODE_V2
+GROK_ALIAS       GROK_CONTEXT_WINDOW            CODEX_WIRE_API
 ```
 
 优先级：**命令行 > 环境变量 > 交互输入 > 默认值**。
-
-内网镜像可以这样覆盖下载源：
-
-```bash
-AICLI_RAW_HOST=https://git.example.com/raw \
-AICLI_JSD_HOST=https://cdn.example.com/gh \
-AICLI_OWNER=my-mirror \
-./ai-cli-setup.sh all
-```
-
----
-
-## 6. 缓存
-
-上游脚本下载到 `~/.cache/ai-cli-setup/<repo>@<ref>/`：
-
-```
-~/.cache/ai-cli-setup/
-├── pi-setup@main/
-├── omo-setup@main/
-├── claude-code-linux-installer@main/
-├── deploy-codex@main/
-└── GrokBuild@main/
-```
-
-- 仓库内 `upstream/` 有快照时**优先用快照**（离线可用，`list` 里显示 `local`）
-- `--refresh` 强制重下；`--no-cache` 完全不碰缓存
-- 想清空：`rm -rf ~/.cache/ai-cli-setup`
 
 ---
 
@@ -223,13 +259,18 @@ AICLI_OWNER=my-mirror \
 
 | 文件 | 备份位置 |
 |---|---|
-| `~/.grok/config.toml` | `config.toml.bak.<时间戳>` |
-| `~/.config/opencode/opencode.json` | `opencode.json.bak.<时间戳>` |
-| `~/.codex/*` | 上游自己管理，支持 `./ai-cli-setup.sh codex -- --restore` |
-| `~/.pi/agent/models.json` | 上游写入 `.bak.<ISO时间戳>` |
+| `~/.pi/agent/{models,settings}.json` | 同目录 `.bak.<时间戳>` |
+| `~/.omo/agent/{models,settings}.json` | 同目录 `.bak.<时间戳>` |
+| `~/.omp/agent/{models.yml,config.yml}` | 同目录 `.bak.<时间戳>` |
+| `~/.claude/settings.json` | 同目录 `.bak.<时间戳>` |
+| `~/.codex/{config.toml,auth.json}` | 同目录 `.bak.<时间戳>` |
+| `~/.grok/config.toml` | 同目录 `.bak.<时间戳>` |
+| `~/.config/opencode/opencode.json` | 同目录 `.bak.<时间戳>` |
 
 手动回滚：
 
 ```bash
 cp ~/.grok/config.toml.bak.20261010120000 ~/.grok/config.toml
 ```
+
+`--dry-run` 不产生任何备份，也不创建目录。

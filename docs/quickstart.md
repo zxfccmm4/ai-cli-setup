@@ -10,8 +10,8 @@
 |---|---|
 | 系统 | Linux 或 macOS（Windows 建议 WSL2） |
 | Shell | bash 3.2+（macOS 自带即可，**不需要** `brew install bash`） |
-| 网络 | 能访问 `raw.githubusercontent.com`（被墙会自动切 jsDelivr 镜像） |
-| 命令 | `curl` 或 `wget`；写配置需要 `node` 或 `bun` |
+| 网络 | 能访问各 agent 的官方安装源 |
+| 命令 | `curl` 或 `wget`；写 Pi / OmO / Codex / OMP 的配置建议有 `node`（无 node 时脚本有纯 bash 兜底） |
 
 先体检一下：
 
@@ -19,14 +19,14 @@
 ./ai-cli-setup.sh doctor
 ```
 
-会打印平台、shell、语言、缓存目录、已装命令、已装 CLI、已有配置文件。
-`·` 表示没装，`✓` 表示可用 —— **没有 `✗` 就不会有硬性阻塞**。
+会打印平台、用户、语言、可用命令、已装 CLI、已有配置文件。
+`·` 表示没装，`✓` 表示可用。
 
 ---
 
 ## 1. 拿到脚本
 
-**方式 A：克隆（推荐，自带离线快照）**
+**方式 A：克隆（推荐，方便看代码）**
 
 ```bash
 git clone https://github.com/zxfccmm4/ai-cli-setup.git
@@ -34,7 +34,7 @@ cd ai-cli-setup
 ./ai-cli-setup.sh
 ```
 
-**方式 B：一行命令（不落盘，自动下载上游）**
+**方式 B：一行命令**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-setup.sh | bash
@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 **方式 C：Release 产物**
 
 ```bash
-gh release download v1.0.0 -R zxfccmm4/ai-cli-setup
+gh release download v2.1.0 -R zxfccmm4/ai-cli-setup
 chmod +x ai-cli-setup.sh          # GitHub asset 不带可执行位
 ./ai-cli-setup.sh
 ```
@@ -65,50 +65,50 @@ chmod +x ai-cli-setup.sh          # GitHub asset 不带可执行位
 会依次问你：
 
 ```
-Which tools do you want to set up?
+Select language  /  选择语言
+  1) English
+  2) 中文 (Chinese)
 
+要安装哪些 AI agent？
   1) Pi           https://pi.dev
   2) OmO          https://omo.dev
-  3) Claude Code  https://claude.ai/code
-  4) Codex CLI    https://github.com/openai/codex
-  5) Grok Build   https://x.ai/cli
-  6) OpenCode     https://opencode.ai
-  7) all of the above
+  3) OMP          https://omp.sh
+  4) Claude Code  （仅 Linux/WSL）
+  5) Codex CLI    https://github.com/openai/codex
+  6) Grok Build   https://x.ai/cli
+  7) OpenCode     https://opencode.ai
+  8) 以上全部
 
-choose (e.g. 1,3 or 7 for all) [7]:
+  单个数字 = 单选   |   1,3 或 1-3 = 多选   |   回车 或 a = 全部
 ```
 
-- 输入 `1,3` → 只装 Pi 和 Claude Code
-- 输入 `7` 或直接回车 → 全部
+- 输入 `1,3` → 只装 Pi 和 OMP
+- 输入 `8` 或直接回车 → 全部
 
 然后：
 
 ```
-API endpoint base URL (e.g. https://api.example.com/v1): https://gw.example.com/v1
-API key: ********
-ℹ  fetching model list from the endpoint...
-model ids to register (comma separated, blank = all above) [gpt-5.6,gpt-5.5,...]:
+接口 base URL: https://gw.example.com/v1
+API key: sk-**************xyz
+ℹ  正在从端点获取模型列表...
+要写入的模型 id（逗号分隔，留空 = 全部）:
 ```
 
-**API Key 输入时不回显**，之后的摘要里也只会显示 `前4****后4`。
+**API Key 输入时实时掩码**（只显示前 3 位 + 星号 + 后 3 位），粘贴也不回显明文。
 
 模型列表会自动从 `<base-url>/v1/models` 拉取，直接回车表示「全部注册」。
 
 ---
 
-## 3. 只装一个工具
+## 3. 只装某几个工具
 
 ```bash
 ./ai-cli-setup.sh pi
+./ai-cli-setup.sh pi,omp,opencode
 ```
 
-最省事的写法：**把工具名当第一个参数**。等价于 `--only pi`。
-
-想跳过某个：
-
-```bash
-./ai-cli-setup.sh all --skip claude,codex
-```
+最省事的写法：**把 agent 名当位置参数**，逗号分隔可多选；
+`all` 表示全部。
 
 ---
 
@@ -131,7 +131,7 @@ model ids to register (comma separated, blank = all above) [gpt-5.6,gpt-5.5,...]
 ./ai-cli-setup.sh all -y --base-url ... --api-key ... --dry-run
 ```
 
-`--dry-run` 只打印「将要写什么」，**不落盘、不装软件**。
+`--dry-run` 只打印「将要写什么」，**不落盘、不建目录、不装软件**。
 
 ---
 
@@ -147,6 +147,7 @@ model ids to register (comma separated, blank = all above) [gpt-5.6,gpt-5.5,...]
 |---|---|
 | Pi | `pi --version`，然后在项目里 `pi` |
 | OmO | `omo --version` |
+| OMP | `omp --version` |
 | Claude Code | `claude --version` |
 | Codex CLI | `codex --version` |
 | Grok Build | `grok --version` |

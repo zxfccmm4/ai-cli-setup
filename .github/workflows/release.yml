@@ -97,8 +97,8 @@ jobs:
             echo "--- ai-cli-setup.sh ---"
             ./ai-cli-setup.sh --version
             echo
-            echo "--- upstream snapshot ---"
-            sed -n '1,60p' VERSIONS.md 2>/dev/null || true
+            echo "--- supported agents ---"
+            ./ai-cli-setup.sh list 2>/dev/null || true
           } > "dist/VERSION.txt"
 
           # 校验和（用文件名，方便 shasum -c）
@@ -159,7 +159,7 @@ jobs:
             echo '| `ai-cli-setup.sh` | 统一入口脚本（单文件） |'
             echo '| `changelog.sh` | CHANGELOG 生成器 |'
             echo '| `SHA256SUMS` | 校验和（`sha256sum -c SHA256SUMS`） |'
-            echo '| `VERSION.txt` | 版本 / 提交 / 上游快照信息 |'
+            echo '| `VERSION.txt` | 版本 / 提交 / 支持的 agent 列表 |'
             echo
             echo "### 校验 / Verify"
             echo

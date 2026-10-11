@@ -8,26 +8,20 @@
 
 ```
 .
-├── ai-cli-setup.sh              # 统一入口（唯一的主脚本，~1300 行）
+├── ai-cli-setup.sh              # 唯一的主脚本（全自研，无上游依赖）
 ├── scripts/
-│   └── changelog.sh             # CHANGELOG 生成器
-├── upstream/                    # 5 个上游仓库的未修改快照（离线可用）
-│   ├── pi-setup/
-│   ├── omo-setup/
-│   ├── claude-code-linux-installer/
-│   ├── deploy-codex/
-│   └── GrokBuild/
+│   ├── changelog.sh             # CHANGELOG 生成器
+│   └── check-multibyte-vars.py  # bash 3.2 多字节变量检查
 ├── docs/                        # 本目录
 ├── .github/workflows/
 │   ├── ci.yml                   # 语法 + shellcheck + 双平台冒烟
 │   └── release.yml              # tag 触发：verify → build → release
-├── VERSIONS.md                  # --pin 用的上游提交锁定表
 ├── CHANGELOG.md                 # 由 scripts/changelog.sh 生成
 └── README.md
 ```
 
-**约定**：`upstream/` 里的文件**永远不改**，直接照搬上游。
-所有整合逻辑都在 `ai-cli-setup.sh` 里。
+**约定**：所有安装与配置逻辑都在 `ai-cli-setup.sh` 里，不下载也不包装任何第三方
+安装脚本；各 agent 走**官方 installer 或官方 npm 包**。
 
 ---
 
@@ -37,51 +31,37 @@
 git clone https://github.com/zxfccmm4/ai-cli-setup.git
 cd ai-cli-setup
 ./ai-cli-setup.sh doctor      # 先看环境
-./ai-cli-setup.sh list        # 看工具清单与缓存状态
+./ai-cli-setup.sh list        # 看各 agent 是否已装
 ```
 
 ### 主脚本的结构（从上到下）
 
 | 段落 | 内容 |
 |---|---|
-| 1–5 | 默认值、i18n、输出 helper、TTY、平台检测 |
-| 6 | **工具清单（manifest）**：`tool_repo` / `tool_files` / `tool_entry` / … |
-| 7 | 下载与缓存 |
+| 1–5 | 全局状态、i18n、输出 helper、TTY/掩码输入、平台检测 |
+| 6 | **agent 清单（manifest）**：`ALL_AGENTS` / `agent_bin` / `agent_title` / `agent_needs_models` … |
+| 7 | 安装：`install_<agent>` + `post_install_check` |
 | 8 | 模型列表（`/v1/models`） |
-| 9 | 凭据收集 |
-| 10 | Grok 配置写入 |
-| 10b | **OpenCode**：安装 + `opencode.json` 合并写入 |
-| 11 | 运行单个工具（`run_tool`） |
-| 12 | 子命令（`cmd_list` / `cmd_doctor` / …） |
-| 13–14 | 参数解析、main |
+| 9 | JSON 工具（无 jq 依赖） |
+| 10 | 配置写入：每个 agent 一个 `write_*` 函数 |
+| 11–12 | 交互（语言 → agent）、凭据收集 |
+| 13 | 子命令（`cmd_list` / `cmd_doctor` / `usage`） |
+| 14 | 参数解析、`main` |
 
-### 加一个新工具要改哪里
+### 加一个新 agent 要改哪里
 
-以加 `foo` 为例，在 **manifest 段落** 补几处：
+以加 `foo` 为例：
 
-```bash
-ALL_TOOLS="pi omo claude codex grok opencode foo"     # 1. 加进列表
-
-tool_repo()  { ... foo) printf 'foo-setup' ;; }       # 2. 上游仓库名
-tool_pin()   { ... foo) printf '%s' "$PIN_foo" ;; }   # 3. --pin 提交
-tool_files() { ... foo) printf '%s\n' foo-setup.sh ;; }  # 4. 需要下载的文件
-tool_entry() { ... foo) printf 'foo-setup.sh' ;; }    # 5. 入口脚本
-tool_title() { ... foo) printf 'Foo' ;; }             # 6. 显示名
-tool_homepage(){ ... foo) printf 'https://foo.dev' ;; } # 7. 主页
-tool_valid() { ... pi|...|foo) return 0 ;; }          # 8. 合法工具
-```
-
-再按需补：`tool_supports_lang` / `tool_supports_dry_run` / `tool_needs_root`
-/ `tool_env_prefix` / `tool_extra_args`，以及交互菜单 `cmd_interactive_pick`
-里的编号。
-
-如果是**没有上游仓库**的工具（像 `opencode`），额外加：
-
-```bash
-tool_selfmanaged() { case "$1" in opencode) return 0 ;; *) return 1 ;; esac; }
-```
-
-并在 `run_tool` 里分派到你自己的实现。
+1. **manifest（第 6 段）**：`ALL_AGENTS` 加 `foo`；`agent_valid` / `agent_title` /
+   `agent_homepage` / `agent_bin` 各加一个 `foo)` 分支；按需在
+   `agent_needs_models` / `agent_needs_model` / `agent_linux_only` /
+   `agent_unrunnable_here` 里登记。
+2. **安装（第 7 段）**：写 `install_foo()`，**返回非 0 表示失败**
+   （不要用 `die`，见下文「坑」）。
+3. **`install_agent`**：在 `case` 里加 `foo) install_foo || rc=$? ;;`。
+4. **配置（第 10 段）**：写 `write_foo()`，并在 `configure_agent` 的 `case` 里分派。
+5. **文档**：`usage()` 的 AGENTS / CONFIG FILES 表、`cmd_doctor` 的配置文件列表、
+   `README.md` 的 agent 矩阵。
 
 ---
 
@@ -97,14 +77,14 @@ bash -n scripts/changelog.sh
 # 2. shellcheck
 shellcheck -S warning ai-cli-setup.sh scripts/changelog.sh
 
-# 3. 基本命令
+# 3. 多字节变量（bash 3.2）
+python3 scripts/check-multibyte-vars.py ai-cli-setup.sh scripts/changelog.sh
+
+# 4. 基本命令
 ./ai-cli-setup.sh --version
 ./ai-cli-setup.sh --help >/dev/null
 ./ai-cli-setup.sh list >/dev/null
 ./ai-cli-setup.sh doctor >/dev/null
-
-# 4. 离线快照
-./ai-cli-setup.sh download --only pi,omo,codex,grok
 
 # 5. CHANGELOG
 ./scripts/changelog.sh --all --update CHANGELOG.md
@@ -122,42 +102,66 @@ mkdir -p "$HOME"
 
 ./ai-cli-setup.sh opencode -y --skip-install \
   --base-url https://gw.example.com/v1 \
-  --api-key sk-test-123456 \
+  --api-key sk-test \
   --models gpt-5,gpt-5-mini
 
 node -e '
 const c = require(process.env.HOME + "/.config/opencode/opencode.json");
-const p = c.provider["gw-example-com"];
-if (p.options.baseURL !== "https://gw.example.com/v1") throw new Error("baseURL");
+const p = (c.provider || c.providers)["gw-example-com"];
+const opts = p.options || p.settings;
+if (opts.baseURL !== "https://gw.example.com/v1") throw new Error("baseURL");
 if (!p.models["gpt-5"]) throw new Error("models");
-if (c.model !== "gw-example-com/gpt-5") throw new Error("default model");
 console.log("opencode.json OK");
 '
 ```
 
-### 手动测某个工具
+### 手动测某个 agent
 
 ```bash
 ./ai-cli-setup.sh grok -y --dry-run --skip-install \
   --base-url https://gw.example.com/v1 --api-key sk-x
 ```
 
+`--dry-run` 必须做到「零落盘」：不建目录、不写备份、不执行 agent 二进制
+（`opencode --version` 会自己创建 cache/state/log 目录，所以 V2 探测在
+dry-run 下改为只看配置文件）。
+
+### 模拟「没有 node / curl」的精简系统
+
+用只含基础命令的临时 PATH 跑，能覆盖 musl/BusyBox 分支：
+
+```bash
+mkdir -p /tmp/shim/bin
+for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty; do
+  ln -sf "$(command -v $c)" /tmp/shim/bin/$c
+done
+HOME=/tmp/h PATH=/tmp/shim/bin /tmp/shim/bin/bash ./ai-cli-setup.sh pi -y \
+  --base-url https://gw.example.com/v1 --api-key sk-x --models m1
+```
+
 ---
 
-## 4. 两个必须记住的坑
+## 4. 三个必须记住的坑
 
 ### ① `$var` 后面紧跟中文 → 必须写 `${var}`
 
 bash 3.2 + `set -u` 会把中文首字节当成变量名的一部分，报 `unbound variable`：
 
 ```bash
-err "下载 $file 失败（$repo@$ref）"     # ✗
+err "下载 $file 失败（$repo@$ref）"       # ✗
 err "下载 ${file} 失败（${repo}@${ref}）"  # ✓
 ```
 
-CI 有自动检查（`No bare $var before multibyte text`）。
+CI 有自动检查（`scripts/check-multibyte-vars.py`）。
 
-### ② 隔离测试要同时设 `XDG_CONFIG_HOME`
+### ② 依赖缺失要「返回失败」，不要 `die`
+
+`die` 会直接 `exit 1`，把整个流程带走——后面的 agent 连配置都不会写。
+`install_<agent>` / `ensure_node` / `need_dl` 一律 `return 1`，由
+`install_agent` 收口成该 agent 的 `FAIL`；「首败即停」交给 `--fail-fast`。
+安装失败也必须如实报 `FAIL`：`post_install_check` 找不到可执行二进制时返回 1。
+
+### ③ 隔离测试要同时设 `XDG_CONFIG_HOME`
 
 否则 OpenCode 的配置会写到 runner 的真实 HOME 里，测试找不到文件。
 
@@ -168,21 +172,18 @@ CI 有自动检查（`No bare $var before multibyte text`）。
 `.github/workflows/ci.yml`，两个 job：
 
 **`lint`**（ubuntu-latest）
-- 自有脚本 `bash -n`
+- `bash -n`
 - `shellcheck -S warning`
 - `$var` + 中文 检查
 - CHANGELOG 格式检查（硬性）+ 新鲜度检查（告警）
 - `changelog.sh` 幂等测试
-- 上游快照语法检查（仅信息性，`continue-on-error`）
 
 **`smoke`**（ubuntu + macos 矩阵）
 - `--version` / `--help` / `list` / `doctor`
-- 离线快照解析
-- 隔离 HOME 下真写 `opencode.json`、`~/.grok/config.toml`
-- 校验内容、`600` 权限、备份文件、JSON 合并不丢键
-- `--dry-run` 不落盘
-- `-y` 缺凭据报错、未知工具被拒
-- 逗号分隔工具列表
+- 隔离 HOME 下 `all -y --skip-install` 真写全部配置文件，校验内容与 `600` 权限
+- `--dry-run` 零落盘、`-y` 缺凭据报错、未知 agent 被拒
+- 交互流程（`AICLI_ASSUME_TTY`）与菜单重试
+- 合并不丢键（`plugin` / 其它 provider 保留）
 - 管道模式（`cat ... | bash -s --`）
 - macOS 系统 bash 3.2 兼容性
 
@@ -217,8 +218,8 @@ git commit -m "docs(changelog): 同步变更记录"
 git push origin main
 
 # 2. 打 tag 并推送（触发 Release workflow）
-git tag -a v1.1.0 -m "v1.1.0 — 简要说明"
-git push origin v1.1.0
+git tag -a v2.1.0 -m "v2.1.0 — 简要说明"
+git push origin v2.1.0
 ```
 
 `release.yml` 会：
@@ -234,7 +235,7 @@ git push origin v1.1.0
 发布后自检：
 
 ```bash
-gh release download v1.1.0 -R zxfccmm4/ai-cli-setup
+gh release download v2.1.0 -R zxfccmm4/ai-cli-setup
 chmod +x ai-cli-setup.sh
 shasum -a 256 -c SHA256SUMS
 ./ai-cli-setup.sh --version
@@ -242,18 +243,10 @@ shasum -a 256 -c SHA256SUMS
 
 ---
 
-## 8. 更新上游快照
+## 8. 版本号
 
-上游更新后，刷新 `upstream/` 与 `VERSIONS.md`：
-
-```bash
-for r in pi-setup omo-setup claude-code-linux-installer deploy-codex GrokBuild; do
-  echo "$r $(git ls-remote https://github.com/zxfccmm4/$r main | cut -f1)"
-done
-```
-
-把新提交写进 `VERSIONS.md` 和 `ai-cli-setup.sh` 顶部的 `PIN_*` 变量，
-然后重新拉取 `upstream/` 下对应文件。
+`VERSION` 在脚本顶部（当前 `2.1.0`）。改脚本行为就同步 bump，并在
+`CHANGELOG.md` 记录；脚本本身不联网检查更新。
 
 ---
 
@@ -264,4 +257,4 @@ done
 - 所有面向用户的输出走 `stderr`（`>&2`），只有数据走 stdout
 - 面向用户的文案用 `lc 'english' '中文'` 双语
 - 写文件用 `mktemp` + `mv` 原子替换，敏感文件 `chmod 600`
-- 改文件前先备份
+- 改文件前先备份；`--dry-run` 下不备份、不建目录、不落盘

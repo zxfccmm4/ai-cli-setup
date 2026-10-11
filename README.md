@@ -18,7 +18,7 @@
 curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-setup.sh | bash
 ```
 
-一条命令搞定 **Pi**、**OmO**、**Claude Code**、**Codex**、**Grok Build**、**OpenCode** 6 大主流 CLI Agent。<br />
+一条命令搞定 **Pi**、**OmO**、**OMP**、**Claude Code**、**Codex**、**Grok Build**、**OpenCode** 7 大主流 CLI Agent。<br />
 各走官方渠道安装，原生配置自动生成，无第三方包装脚本，纯 Bash 实现。
 
 <br />
@@ -28,15 +28,16 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 
 ## ✨ 核心特性
 
-- 🎯 **一键统管 6 大主流 Agent**：支持 Pi、OmO、Claude Code、Codex、Grok Build、OpenCode，按需多选或全选安装。
-- 🔑 **凭据只问一次**：Base URL 与 API Key 统一采集，一键批量分发写入各 Agent 的原生配置格式（JSON / TOML）。
+- 🎯 **一键统管 7 大主流 Agent**：支持 Pi、OmO、OMP、Claude Code、Codex、Grok Build、OpenCode，按需多选或全选安装。
+- 🔑 **凭据只问一次**：Base URL 与 API Key 统一采集，一键批量分发写入各 Agent 的原生配置格式（JSON / TOML / YAML）。
 - 📡 **智能拉取模型**：配置时自动请求网关端点拉取模型列表，一键全选或交互式挑选。
 - 🔒 **银行级安全防护**：
   - **交互动态掩码**：API Key 实时渲染为 `sk-******xyz`，粘贴及输入均不闪现明文。
   - **严格权限隔离**：所有生成的敏感配置文件权限均强制设为 `600`。
-  - **零风险回退**：覆盖前自动创建带时间戳的备份副本；提供 `--dry-run` 预览落盘计划。
+  - **零风险回退**：覆盖前自动创建带时间戳的备份副本；提供 `--dry-run` 预览落盘计划（零落盘、零副作用）。
   - **OpenCode V2 机制保护**：Key 支持通过 `{env:}` 环境变量引用导出，不直接硬编码在配置文件中。
-- 🐧 **极致兼容**：全面适配 Linux (glibc)、macOS (arm64/x86_64) 及 OpenWrt / Alpine 等 musl 软路由架构。
+- 🧩 **合并写入，不丢配置**：OpenCode / Claude Code / OMP 均按键级合并，已有插件、MCP、其它 Provider 与主题设置原样保留。
+- 🐧 **极致兼容**：全面适配 Linux (glibc)、macOS (arm64/x86_64) 及 OpenWrt / Alpine 等 musl 软路由架构；无 node 的精简系统有纯 Bash 兜底。
 
 ---
 
@@ -53,18 +54,19 @@ choose / 请选择 2
 要安装哪些 AI agent？
   1) Pi           https://pi.dev
   2) OmO          https://omo.dev
-  3) Claude Code  （仅 Linux/WSL）
-  4) Codex CLI    https://github.com/openai/codex
-  5) Grok Build   https://x.ai/cli
-  6) OpenCode     https://opencode.ai
-  7) 以上全部
+  3) OMP          https://omp.sh
+  4) Claude Code  （仅 Linux/WSL）
+  5) Codex CLI    https://github.com/openai/codex
+  6) Grok Build   https://x.ai/cli
+  7) OpenCode     https://opencode.ai
+  8) 以上全部
 
-  单个数字 = 单选   |   1,3 或 1-3 = 多选   |   a 或 7 = 全部
+  单个数字 = 单选   |   1,3 或 1-3 = 多选   |   a 或 8 = 全部
 
-请选择 7
-ℹ  已选择：Pi, OmO, Claude Code, Codex CLI, Grok Build, OpenCode
+请选择 8
+ℹ  已选择：Pi, OmO, OMP, Claude Code, Codex CLI, Grok Build, OpenCode
 
-==> 安装 Pi · OmO · Claude Code · Codex · Grok · OpenCode
+==> 安装 Pi · OmO · OMP · Claude Code · Codex · Grok · OpenCode
     （官方渠道：官方 installer 或 npm，已装则自动跳过）
 
 ==> 凭据（只问一次，所有 agent 共用）
@@ -75,6 +77,7 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 
 ==> 配置 Pi          ✓ ~/.pi/agent/{models,settings}.json
 ==> 配置 OmO         ✓ ~/.omo/agent/{models,settings}.json
+==> 配置 OMP         ✓ ~/.omp/agent/{models.yml,config.yml}
 ==> 配置 Claude Code ✓ ~/.claude/settings.json
 ==> 配置 Codex       ✓ ~/.codex/{config.toml,auth.json}
 ==> 配置 Grok        ✓ ~/.grok/config.toml
@@ -84,12 +87,13 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 ────────────────────────────────────────────
   ✓  Pi           3s
   ✓  OmO          12s
+  ✓  OMP          9s
   ✓  Claude Code  48s
   ✓  Codex CLI    5s
   ✓  Grok Build   2s
   ✓  OpenCode     8s
 ────────────────────────────────────────────
-ℹ  配置成功 6 个，失败 0 个
+ℹ  配置成功 7 个，失败 0 个
 ```
 
 ---
@@ -98,8 +102,9 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 
 | Agent | 官方安装渠道 | 配置文件位置 | 配置格式 | 特别说明 |
 | :--- | :--- | :--- | :---: | :--- |
-| **Pi** | `pi.dev/install.sh`（回退 npm） | `~/.pi/agent/{models,settings}.json` | `JSON` | 自动配置 Provider 与默认模型 |
+| **Pi** | npm `@earendil-works/pi-coding-agent`（回退 `pi.dev/install.sh`） | `~/.pi/agent/{models,settings}.json` | `JSON` | 自动配置 Provider 与默认模型 |
 | **OmO** | `get.omo.dev`（回退 npm） | `~/.omo/agent/{models,settings}.json` | `JSON` | root 用户下自动授权执行 |
+| **OMP** | `omp.sh/install`（回退 bun / npm） | `~/.omp/agent/{models.yml,config.yml}` | `YAML` | 保留 `modelRoles` 其它角色与主题设置；密钥强制 600 |
 | **Claude Code** | `claude.ai/install.sh`（回退 npm） | `~/.claude/settings.json` | `JSON` | 安装仅支持 Linux/WSL；macOS 仅写配置 |
 | **Codex CLI** | npm `@openai/codex` | `~/.codex/{config.toml,auth.json}` | `TOML` / `JSON` | 自动写入模型映射与 Base URL |
 | **Grok Build** | `x.ai/cli/install.sh` | `~/.grok/config.toml` | `TOML` | 自动配置模型别名与上下文窗口 |
@@ -113,7 +118,7 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 | :--- | :---: | :--- |
 | **Linux (glibc)** | ✅ **全部支持** | Ubuntu, Debian, CentOS, Fedora, Arch 等全特性支持 |
 | **macOS** | ✅ **全部支持** | 原生兼容；Claude Code 跳过安装阶段仅写配置（上游官方限制） |
-| **OpenWrt / musl 软路由** | ⚡ **深度优化** | 自动识别 musl 架构并安装官方 musl 构建；Pi/OmO/Codex 依赖 Node 建议在容器运行 |
+| **OpenWrt / musl 软路由** | ⚡ **深度优化** | 自动识别 musl 架构并安装官方 musl 构建；Pi/OmO/OMP/Codex 依赖 Node，会优雅跳过安装但仍写配置（建议在容器运行） |
 
 ---
 
@@ -171,7 +176,14 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 <summary><b>Claude Code 界面正常，但对话时报错提示模型不存在？</b></summary>
 <br />
 
-当默认模型留空时，Claude Code 会尝试使用官方模型名（例如 `claude-opus-5-5`），部分第三方网关无法识别此名称。请使用 `--model <真实模型ID>` 重新运行脚本配置。
+当默认模型留空时，Claude Code 会尝试使用官方模型名（例如 `claude-opus-5-5`），部分第三方网关无法识别此名称。脚本现在**要求必须提供默认模型**（`--model`，或自动取 `--models` 的第一个）；若仍有问题，请用 `--model <网关上的真实模型 ID>` 重新运行。
+</details>
+
+<details>
+<summary><b>OMP 的密钥为什么是明文写在 <code>models.yml</code> 里？</b></summary>
+<br />
+
+这是 OMP 的限制：它的 `models.yml` **不做环境变量插值**（写 `${VAR}` 会被原样当成密钥发送），也没有 OpenCode 那样的 `{env:}` 引用语法。脚本因此把密钥明文写入并强制 `chmod 600` 保护该文件。
 </details>
 
 <details>
@@ -185,7 +197,7 @@ musl 系统若误安装了 glibc 预编译二进制，在动态链接器缺失�
 <summary><b>重复执行脚本会冲掉现有的配置或插件吗？</b></summary>
 <br />
 
-不会。写入新配置前会自动对原文件建立时间戳备份（`*.bak.<timestamp>`）。对于 OpenCode 和 Claude Code，脚本会在 JSON 键级上做增量合并，已有插件及其它 Provider 配置不会丢失。
+不会。写入新配置前会自动对原文件建立时间戳备份（`*.bak.<timestamp>`）。对于 OpenCode、Claude Code 与 OMP，脚本会做键级/块级增量合并——已有插件、MCP、其它 Provider、`theme`、以及 `modelRoles` 里的 `smol`/`slow` 等角色都不会丢失。
 </details>
 
 ---
