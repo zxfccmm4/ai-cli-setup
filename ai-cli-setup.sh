@@ -129,11 +129,25 @@ secret_mask() {
   fi
 }
 
+# 掩码回显输出。必须用 fd 复制（>&2）而不是 `> /dev/stderr`：
+# 在 Linux 上 /dev/stderr 是 /proc/self/fd/2 的符号链接，用 `>` 打开会
+# 以 O_TRUNC 重新打开它指向的文件，把调用方重定向的日志截断，
+# 并从偏移 0 重新写入（与 shell 自己的 fd 2 偏移错位，中间留下 NUL 空洞）。
+# 结果就是 `script > out 2>&1` 时 out 前半段丢失、出现 \0 填充。
+secret_echo() {  # secret_echo <text> <tty|stderr>
+  if [ "$2" = "stderr" ]; then
+    printf '%s' "$1" >&2
+  else
+    printf '%s' "$1" > /dev/tty 2>/dev/null || printf '%s' "$1" >&2
+  fi
+  return 0
+}
+
 read_secret() {
   local __var="$1" __prompt="$2" __c="" __buf="" __prev=0 __m=""
-  local __in="/dev/tty" __out="/dev/tty"
-  stdin_is_input && { __in="/dev/stdin"; __out="/dev/stderr"; }
-  printf '%s' "$__prompt" > "$__out" 2>/dev/null || printf '%s' "$__prompt" >&2
+  local __in="/dev/tty" __mode="tty"
+  stdin_is_input && { __in="/dev/stdin"; __mode="stderr"; }
+  secret_echo "$__prompt" "$__mode"
 
   if [ "$__in" = "/dev/stdin" ] && [ ! -t 0 ]; then
     IFS= read -r __buf || true
@@ -154,32 +168,32 @@ read_secret() {
       $'\x7f'|$'\x08')
         if [ -n "$__buf" ]; then
           __buf="${__buf%?}"; __m="$(secret_mask "$__buf")"
-          [ "$__prev" -gt 0 ] && repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
-          printf '%s' "$__m" > "$__out" 2>/dev/null || true
+          [ "$__prev" -gt 0 ] && secret_echo "$(repeat_char $'\b' "$__prev")" "$__mode"
+          secret_echo "$__m" "$__mode"
           local __pad=$((__prev - ${#__m}))
           if [ "$__pad" -gt 0 ]; then
-            printf '%*s' "$__pad" '' > "$__out" 2>/dev/null || true
-            repeat_char $'\b' "$__pad" > "$__out" 2>/dev/null || true
+            secret_echo "$(printf '%*s' "$__pad" '')" "$__mode"
+            secret_echo "$(repeat_char $'\b' "$__pad")" "$__mode"
           fi
           __prev=${#__m}
         fi ;;
       $'\x15')
         if [ "$__prev" -gt 0 ]; then
-          repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
-          printf '%*s' "$__prev" '' > "$__out" 2>/dev/null || true
-          repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
+          secret_echo "$(repeat_char $'\b' "$__prev")" "$__mode"
+          secret_echo "$(printf '%*s' "$__prev" '')" "$__mode"
+          secret_echo "$(repeat_char $'\b' "$__prev")" "$__mode"
         fi
         __buf=""; __prev=0 ;;
       $'\x04') break ;;
       *)
         __buf="${__buf}${__c}"; __m="$(secret_mask "$__buf")"
-        [ "$__prev" -gt 0 ] && repeat_char $'\b' "$__prev" > "$__out" 2>/dev/null || true
-        printf '%s' "$__m" > "$__out" 2>/dev/null || true
+        [ "$__prev" -gt 0 ] && secret_echo "$(repeat_char $'\b' "$__prev")" "$__mode"
+        secret_echo "$__m" "$__mode"
         __prev=${#__m} ;;
     esac
   done
   [ -n "$__saved" ] && { stty "$__saved" < "$__in" 2>/dev/null || true; trap - INT TERM HUP; }
-  printf '\n' > "$__out" 2>/dev/null || true
+  secret_echo $'\n' "$__mode"
   printf -v "$__var" '%s' "$__buf"
   return 0
 }
@@ -1024,7 +1038,8 @@ PYK
     info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 ${env_var}（key 不写入 opencode.json）")"
   fi
   # 写进 shell 配置只对新开的 shell 生效；当前终端里的 opencode 会拿不到凭据。
-  info "$(lc "current shell: run this first" "当前终端先执行")  export ${env_var}='$API_KEY'"
+  # 提示里不回显明文密钥——终端可能被录屏/滚屏留存，照抄 shell 配置里那一行即可。
+  info "$(lc "current shell: run this first" "当前终端先执行")  source ${shellrc}   $(lc "(or open a new terminal)" "（或新开一个终端）")"
 }
 
 # --- omp：写 ~/.omp/agent/models.yml（providers）+ config.yml（modelRoles.default） ---

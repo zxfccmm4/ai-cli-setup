@@ -179,6 +179,38 @@ jobs:
           if ./ai-cli-setup.sh bogus >/dev/null 2>&1; then echo "should fail"; exit 1; fi
           echo "guards OK"
 
+      - name: Masked input does not truncate redirected output
+        run: |
+          # 回归：read_secret 曾用 `printf ... > /dev/stderr`，在 Linux 上会以
+          # O_TRUNC 重开重定向目标，把日志前半段截掉并留下 NUL 空洞。
+          export HOME="$RUNNER_TEMP/fakehome12"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export AICLI_ASSUME_TTY=1
+          mkdir -p "$HOME"
+          printf '2\n7\nhttps://gw.example.com/v1\nsk-SECRET-VALUE\nm1,m2\n' \
+            | ./ai-cli-setup.sh --skip-install > /tmp/mask.out 2>&1
+          # 1) 首行 banner 必须还在（截断会把它冲掉）
+          awk 'NF { print; exit }' /tmp/mask.out | grep -q 'ai-cli-setup' \
+            || { echo "::error::output truncated at the front"; od -c /tmp/mask.out | head; exit 1; }
+          # 2) 不允许出现 NUL 空洞（含 NUL 时字节数与去掉 NUL 后不等）
+          [ "$(wc -c < /tmp/mask.out)" = "$(tr -d '\000' < /tmp/mask.out | wc -c)" ] \
+            || { echo "::error::NUL bytes in captured output"; exit 1; }
+          # 3) 明文密钥不得回显，但必须真的落到凭据存放处：
+          #    V1 → opencode.json 里直写；V2 → shell 配置里 export，json 只留 {env:} 引用
+          if grep -q 'sk-SECRET-VALUE' /tmp/mask.out; then
+            echo "::error::secret leaked into output"; exit 1
+          fi
+          if grep -q 'sk-SECRET-VALUE' "$HOME/.config/opencode/opencode.json"; then
+            echo "secret stored inline (V1) OK"
+          elif grep -qs 'sk-SECRET-VALUE' "$HOME/.bashrc"; then
+            grep -q '{env:' "$HOME/.config/opencode/opencode.json" \
+              || { echo "::error::V2 export without {env:} reference"; exit 1; }
+            echo "secret exported via shell (V2) OK"
+          else
+            echo "::error::secret not written anywhere"; exit 1
+          fi
+          echo "masked input OK"
+
       - name: Merge preserves existing keys
         run: |
           export HOME="$RUNNER_TEMP/fakehome8"
