@@ -705,8 +705,7 @@ build_pi_settings_json() {
 }
 
 provider_from_host() {
-  local u="${1:-$BASE_URL}"
-  printf '%s' "$u" | sed -E 's#^https?://##; s#/.*$##; s#[^A-Za-z0-9]+#-#g' | sed 's/^-//; s/-$//'
+  printf '%s' "${BASE_URL:-}" | sed -E 's#^https?://##; s#/.*$##; s#[^A-Za-z0-9]+#-#g' | sed 's/^-//; s/-$//'
 }
 
 # --- claude：写 ~/.claude/settings.json（env 块） ---
@@ -1072,11 +1071,12 @@ yaml_quote() {
   printf '"%s"' "$s"
 }
 
-# YAML 映射键：安全字符（字母数字 . _ -）直接裸写，否则加双引号。
-# 裸写更贴近 omp 自己 `omp config set` 的产物，也便于文本级合并时匹配。
+# YAML 映射键 / 纯标量：安全字符（字母数字 . _ - /）直接裸写，否则加双引号。
+# 裸写更贴近 omp 自己 `omp config set` 的产物（如 `default: gw/model`），
+# 也便于文本级合并时匹配。
 yaml_key() {
   case "${1:-}" in
-    ''|*[!A-Za-z0-9._-]*) yaml_quote "$1" ;;
+    ''|*[!A-Za-z0-9._/-]*) yaml_quote "$1" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -1173,9 +1173,9 @@ print(json.dumps(r))
     fi
   fi
   # 文本级兜底：只改 modelRoles 下的 default 行，smol/slow 等其它角色原样保留。
-  local sel_q; sel_q="$(yaml_quote "$selector")"
+  local sel_v; sel_v="$(yaml_key "$selector")"
   if [ -s "$cfile" ]; then
-    awk -v sel="$sel_q" '
+    awk -v sel="$sel_v" '
       BEGIN { inroles = 0; seen = 0; hadroles = 0 }
       /^modelRoles:[[:space:]]*$/ {
         inroles = 1; hadroles = 1; print; next
@@ -1189,7 +1189,7 @@ print(json.dumps(r))
       }
     ' "$cfile"
   else
-    printf 'modelRoles:\n  default: %s\n' "$sel_q"
+    printf 'modelRoles:\n  default: %s\n' "$sel_v"
   fi
 }
 

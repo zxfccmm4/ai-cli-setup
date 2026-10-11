@@ -150,10 +150,12 @@ jobs:
           export AICLI_ASSUME_TTY=1
           mkdir -p "$HOME"
           printf '2\n7\nhttps://gw.example.com/v1\nsk-ci-zh\nm1,m2\n' \
-            | ./ai-cli-setup.sh --skip-install > /tmp/i1.out 2>&1
-          grep -q '要安装哪些' /tmp/i1.out
-          grep -q '已选择：OpenCode' /tmp/i1.out
-          test -f "$HOME/.config/opencode/opencode.json"
+            | ./ai-cli-setup.sh --skip-install > /tmp/i1.out 2>&1 || {
+              echo "::error::interactive run exited non-zero"; cat /tmp/i1.out; exit 1
+            }
+          grep -q '要安装哪些' /tmp/i1.out || { echo "::error::menu not shown"; cat /tmp/i1.out; exit 1; }
+          grep -q '已选择：OpenCode' /tmp/i1.out || { echo "::error::selection wrong"; cat /tmp/i1.out; exit 1; }
+          test -f "$HOME/.config/opencode/opencode.json" || { echo "::error::config not written"; cat /tmp/i1.out; exit 1; }
           echo "zh + single pick OK"
 
       - name: Menu retry + dry-run + guards
@@ -163,9 +165,11 @@ jobs:
           export AICLI_ASSUME_TTY=1
           mkdir -p "$HOME"
           printf '1\n9\nzz\n7\nhttps://gw.example.com/v1\nsk-x\nm1\n' \
-            | ./ai-cli-setup.sh --skip-install > /tmp/i2.out 2>&1
-          grep -q 'invalid choice: 9' /tmp/i2.out
-          grep -q 'selected: OpenCode' /tmp/i2.out
+            | ./ai-cli-setup.sh --skip-install > /tmp/i2.out 2>&1 || {
+              echo "::error::retry run exited non-zero"; cat /tmp/i2.out; exit 1
+            }
+          grep -q 'invalid choice: 9' /tmp/i2.out || { echo "::error::retry not detected"; cat /tmp/i2.out; exit 1; }
+          grep -q 'selected: OpenCode' /tmp/i2.out || { echo "::error::selection wrong"; cat /tmp/i2.out; exit 1; }
           # dry-run 不落盘
           ./ai-cli-setup.sh all -y --skip-install --dry-run \
             --base-url https://gw.example.com/v1 --api-key k --models a >/dev/null 2>&1
