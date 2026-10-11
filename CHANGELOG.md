@@ -6,22 +6,7 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [Semantic Versioning](https://semver.org/).
 
-## [v1.0.0] - 2026-10-10
-
-### ✨ Features
-
-- 新增 Release 自动化与 CHANGELOG 生成器 ([`33a2017`](https://github.com/zxfccmm4/ai-cli-setup/commit/33a2017edb3c958d82eef4c9c16688e65983ef1f))
-- 新增 opencode 支持 + GitHub Actions CI ([`9329890`](https://github.com/zxfccmm4/ai-cli-setup/commit/93298903925d279b8ddbca725d373d5524cc2ebd))
-- 统一 zxfccmm4 系列 AI CLI 安装脚本 ([`7754a52`](https://github.com/zxfccmm4/ai-cli-setup/commit/7754a52a5ff9ef35ec67d15a4c99da4a1236c58e))
-
-### 🔧 CI
-
-- CHANGELOG 检查改用完整历史，过期改为告警而非失败 ([`16a81d5`](https://github.com/zxfccmm4/ai-cli-setup/commit/16a81d523519d559f36d9a3117368bab37e83f22))
-- 升级 actions/checkout 与 setup-node 到 v7（消除 Node 20 弃用告警） ([`7ee737f`](https://github.com/zxfccmm4/ai-cli-setup/commit/7ee737fa6e683420d70c4584a66176af013792a2))
-- 修复隔离 HOME 测试失败（runner 预置 XDG_CONFIG_HOME） ([`ca61e58`](https://github.com/zxfccmm4/ai-cli-setup/commit/ca61e58c8a54e38a284fa52cfe038361dfb08243))
-
-
-## [Unreleased]
+## [v2.1.0] - 2026-10-12
 
 ### ✨ Features
 
@@ -60,6 +45,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 📝 Documentation
 
+- 同步 CHANGELOG 与 V2 凭据提示文案 ([`4d8d66a`](https://github.com/zxfccmm4/ai-cli-setup/commit/4d8d66a5da058a9ca60a2d6f1389f9897a389261))
 - 文档与 CI 对齐 2.1 现状，删除 v1 残留 ([`9cfef15`](https://github.com/zxfccmm4/ai-cli-setup/commit/9cfef15f5f69a8cfc554f50a6397ef7c1aed819c))
 - README 改版为介绍版 ([`0910b27`](https://github.com/zxfccmm4/ai-cli-setup/commit/0910b27cfd65e7d99b626333b7aeda5ad41313d8))
 - README 二次优化 ([`a8cd73c`](https://github.com/zxfccmm4/ai-cli-setup/commit/a8cd73cea1eba04891b9c4b0b0c8607e91726277))
@@ -71,3 +57,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 - 把多字节变量检查抽成 scripts/check-multibyte-vars.py ([`0192033`](https://github.com/zxfccmm4/ai-cli-setup/commit/0192033c19b83ef2d360d4efce4a834edf65d476))
 
 
+## [v1.0.0] - 2026-10-10
+
+### ✨ Features
+
+- 新增 Release 自动化与 CHANGELOG 生成器 ([`33a2017`](https://github.com/zxfccmm4/ai-cli-setup/commit/33a2017edb3c958d82eef4c9c16688e65983ef1f))
+- 新增 opencode 支持 + GitHub Actions CI ([`9329890`](https://github.com/zxfccmm4/ai-cli-setup/commit/93298903925d279b8ddbca725d373d5524cc2ebd))
+- 统一 zxfccmm4 系列 AI CLI 安装脚本 ([`7754a52`](https://github.com/zxfccmm4/ai-cli-setup/commit/7754a52a5ff9ef35ec67d15a4c99da4a1236c58e))
+
+### 🔧 CI
+
+- CHANGELOG 检查改用完整历史，过期改为告警而非失败 ([`16a81d5`](https://github.com/zxfccmm4/ai-cli-setup/commit/16a81d523519d559f36d9a3117368bab37e83f22))
+- 升级 actions/checkout 与 setup-node 到 v7（消除 Node 20 弃用告警） ([`7ee737f`](https://github.com/zxfccmm4/ai-cli-setup/commit/7ee737fa6e683420d70c4584a66176af013792a2))
+- 修复隔离 HOME 测试失败（runner 预置 XDG_CONFIG_HOME） ([`ca61e58`](https://github.com/zxfccmm4/ai-cli-setup/commit/ca61e58c8a54e38a284fa52cfe038361dfb08243))
+
+
+## [Unreleased]
