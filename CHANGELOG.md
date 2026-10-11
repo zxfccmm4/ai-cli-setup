@@ -25,6 +25,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### ✨ Features
 
+- 新增 OMP（@oh-my-pi/pi-coding-agent）安装与配置 ([`4f527b4`](https://github.com/zxfccmm4/ai-cli-setup/commit/4f527b44a28cb37966d87bdc3fb20d12012343cd))
 - 优化终端交互体验、修复 provider 映射与跨平台兼容性并美化 README ([`0b92578`](https://github.com/zxfccmm4/ai-cli-setup/commit/0b9257837b976574e2b4c828f42f7bd88a57b09f))
 - opencode 支持 V2 配置格式（providers/settings/package + env 凭据引用） ([`b518fb8`](https://github.com/zxfccmm4/ai-cli-setup/commit/b518fb87b0b3b0bcc81ea67dce1981d28dd606f0))
 - v2.0 全自研重写——不再包装上游脚本 ([`c6a9852`](https://github.com/zxfccmm4/ai-cli-setup/commit/c6a9852219ba6c741b5c08397cd52bca7180b904))
@@ -33,6 +34,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 🐛 Bug Fixes
 
+- 失败隔离用例改为与系统无关的断言 ([`5405ce4`](https://github.com/zxfccmm4/ai-cli-setup/commit/5405ce473329ced461f4b6b25ad52c454fb6a660))
+- 掩码输入不再截断重定向日志（Linux 上 /dev/stderr 的 O_TRUNC 陷阱） ([`e5c4bb4`](https://github.com/zxfccmm4/ai-cli-setup/commit/e5c4bb4f964a3779ec75ec3016b3691c85eaba03))
+- 修复 shellcheck SC2120、omp 角色标量引号不一致，并让交互用例失败时打印输出 ([`0adf1b2`](https://github.com/zxfccmm4/ai-cli-setup/commit/0adf1b28ea569a10f12b42c7611fd5db1dda5724))
+- 安装失败如实上报、依赖缺失不再中断全局、dry-run 零落盘、OpenCode V2 检测与凭据导出 ([`fccaee0`](https://github.com/zxfccmm4/ai-cli-setup/commit/fccaee022f08bfc101af0b36c7b224ca6e0fde41))
+- 修复 iStoreOS/OpenWrt 上 OmO 配置失败、命令找不到、依赖 Node 的 agent 应跳过 ([`3e00c96`](https://github.com/zxfccmm4/ai-cli-setup/commit/3e00c96d4c54ccf65b19ddf2c28ccf8116afd002))
 - 默认模型必填 + set -e 函数返回值陷阱 ([`02326a6`](https://github.com/zxfccmm4/ai-cli-setup/commit/02326a687f0d7868eb0ecc897fe72e1efa2190e0))
 - OpenWrt/musl 三连修——node 拒装、claude 纯 bash 配置、PATH 写 profile.d ([`f49d7eb`](https://github.com/zxfccmm4/ai-cli-setup/commit/f49d7eba2f4f361c049bcb0aa2d324a0434b026b))
 - musl 系统（OpenWrt/iStoreOS）安装 opencode 官方 musl 变体 ([`cd3feb3`](https://github.com/zxfccmm4/ai-cli-setup/commit/cd3feb34f9c73d8c25e417f1b23a5168ddcfdb44))
@@ -54,6 +60,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ### 📝 Documentation
 
+- 文档与 CI 对齐 2.1 现状，删除 v1 残留 ([`9cfef15`](https://github.com/zxfccmm4/ai-cli-setup/commit/9cfef15f5f69a8cfc554f50a6397ef7c1aed819c))
 - README 改版为介绍版 ([`0910b27`](https://github.com/zxfccmm4/ai-cli-setup/commit/0910b27cfd65e7d99b626333b7aeda5ad41313d8))
 - README 二次优化 ([`a8cd73c`](https://github.com/zxfccmm4/ai-cli-setup/commit/a8cd73cea1eba04891b9c4b0b0c8607e91726277))
 - 重构 README ([`d4ad8be`](https://github.com/zxfccmm4/ai-cli-setup/commit/d4ad8be4cd5b25ed06337a1332ff3b50e14256a5))

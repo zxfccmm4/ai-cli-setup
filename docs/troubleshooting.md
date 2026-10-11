@@ -72,16 +72,16 @@ curl -fsSL https://omp.sh/install | sh
 失败时脚本依次退到 `bun install -g @oh-my-pi/pi-coding-agent`（`~/.bun/bin`）
 和 `npm install -g`。OMP 需要 **Bun ≥ 1.3.14**（或官方预编译二进制）。
 
-### OpenCode V2 提示「当前终端先执行 export …」？
+### OpenCode V2 提示「当前终端先执行 source …」？
 
 V2 格式把密钥放在 shell 环境变量里（`opencode.json` 只留 `{env:VAR}` 引用），
 而写进 `.bashrc` / `.zshrc` 只对**新开的 shell** 生效。当前终端里的 opencode
 读不到变量就不会发 `Authorization` 头，网关会直接 401。
 
-按提示在**当前终端**执行一次（或直接新开一个终端）：
+按提示在**当前终端**载入一次（或直接新开一个终端）：
 
 ```bash
-export AICLI_GW_EXAMPLE_COM_API_KEY='sk-xxxx'
+source ~/.bashrc        # zsh 用户：source ~/.zshrc
 ```
 
 想彻底避免这一步，改用 V1 格式（密钥直写配置文件）：
