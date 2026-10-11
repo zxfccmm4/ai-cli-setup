@@ -112,8 +112,11 @@ jobs:
             const st2 = require(base + "/.omo/agent/settings.json");
             if (st2.defaultModel !== "gpt-5") throw new Error("omo defaultModel");
             const oc = require(base + "/.config/opencode/opencode.json");
-            const o = oc.provider["gw-example-com"];
-            if (!o || o.options.apiKey !== "sk-test-123456") throw new Error("opencode");
+            const o = (oc.provider || oc.providers)["gw-example-com"];
+            if (!o) throw new Error("opencode provider missing");
+            const opts = o.options || o.settings;
+            const key = opts.apiKey;
+            if (key !== "sk-test-123456" && !/^\{env:/.test(key)) throw new Error("opencode key: " + key);
             if (oc.model !== "gw-example-com/gpt-5") throw new Error("opencode default: " + oc.model);
             console.log("config contents OK");
           '
@@ -121,6 +124,13 @@ jobs:
           grep -q 'sk-test-123456' "$HOME/.codex/auth.json"
           grep -q 'api_key = "sk-test-123456"' "$HOME/.grok/config.toml"
           echo "codex/grok contents OK"
+          # 敏感文件权限必须是 600
+          for f in "$HOME/.pi/agent/models.json" "$HOME/.grok/config.toml" \
+                   "$HOME/.codex/auth.json" "$HOME/.config/opencode/opencode.json"; do
+            perm="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"
+            [ "$perm" = "600" ] || { echo "::error::$f has mode $perm, want 600"; exit 1; }
+          done
+          echo "permissions OK"
 
       - name: Interactive flow (language -> agents) via AICLI_ASSUME_TTY
         run: |
@@ -171,6 +181,39 @@ jobs:
             if (!c.provider.openrouter) throw new Error("openrouter missing");
             console.log("merge OK");
           '
+
+      - name: Install failure is reported as failure
+        run: |
+          # 造一个只有基础命令、没有 curl/wget/node/npm 的环境：pi 必须报 FAIL，
+          # 且 claude（只写配置）仍应成功 —— 证明单个 agent 失败不会中断全局。
+          SHIM="$RUNNER_TEMP/shim/bin"
+          mkdir -p "$SHIM"
+          for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty dirname head tail cat wc ln rm sleep python3; do
+            p="$(type -P "$c" 2>/dev/null || command -v "$c" 2>/dev/null)" || continue
+            case "$p" in /*) ln -sf "$p" "$SHIM/$c" ;; esac
+          done
+          export HOME="$RUNNER_TEMP/fakehome10"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          mkdir -p "$HOME"
+          set +e
+          PATH="$SHIM" "$SHIM/bash" ./ai-cli-setup.sh pi,claude -y \
+            --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > /tmp/fail.out 2>&1
+          rc=$?
+          set -e
+          [ "$rc" -ne 0 ] || { echo "::error::run should exit non-zero when an agent fails"; cat /tmp/fail.out; exit 1; }
+          grep -q 'install failed' /tmp/fail.out || { echo "::error::no FAIL in summary"; cat /tmp/fail.out; exit 1; }
+          test -f "$HOME/.claude/settings.json" || { echo "::error::later agent was not configured"; exit 1; }
+          echo "failure isolation OK"
+
+      - name: dry-run writes nothing
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome11"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          mkdir -p "$HOME"
+          ./ai-cli-setup.sh all -y --skip-install --dry-run \
+            --base-url https://gw.example.com/v1 --api-key k --models a >/dev/null 2>&1
+          [ -z "$(find "$HOME" -type f | head -1)" ] || { echo "::error::dry-run created files"; find "$HOME" -type f; exit 1; }
+          echo "dry-run clean"
 
       - name: Pipe mode (curl | bash style)
         run: |

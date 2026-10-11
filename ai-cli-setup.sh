@@ -273,11 +273,18 @@ agent_unrunnable_here() {
 # ============================================================
 # 7. 安装（全自研：官方 installer / npm，不依赖 zxfccmm4 仓库）
 # ============================================================
-need_dl() { have curl || have wget || die "$(lc 'need curl or wget' '需要 curl 或 wget')"; }
+# 依赖缺失一律“返回失败”而不是 die：单个 agent 失败不应中断其它 agent
+# （--fail-fast 由调用方统一处理）。
+need_dl() {
+  have curl && return 0
+  have wget && return 0
+  err "$(lc 'need curl or wget' '需要 curl 或 wget')"
+  return 1
+}
 
 run_official() {  # run_official <url> [args...]
   local url="$1"; shift
-  need_dl
+  need_dl || return 1
   if have curl; then curl -fsSL "$url" | bash -s -- "$@"; else wget -qO- "$url" | bash -s -- "$@"; fi
 }
 
@@ -285,26 +292,39 @@ ensure_node() {
   have node && return 0
   # OpenWrt/musl：没有 apt，glibc 的 Node 也跑不起来，明确报可理解的错
   if is_musl_system; then
-    die "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian/Alpine docker container or skip agents that need it (pi/omo/codex)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian/Alpine Docker 容器里装 node，或跳过需要它的 agent（pi/omo/codex）')"
+    err "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian/Alpine docker container or skip agents that need it (pi/omo/codex)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian/Alpine Docker 容器里装 node，或跳过需要它的 agent（pi/omo/codex）')"
+    return 1
   fi
   warn "$(lc 'node not found; installing Node.js via nodesource (needs root)' '未找到 node；通过 nodesource 安装 Node.js（需要 root）')"
   if [ "$OS" = "macos" ]; then
-    have brew || die "$(lc 'install Homebrew first (https://brew.sh)' '请先安装 Homebrew（https://brew.sh）')"
-    brew install node
+    have brew || { err "$(lc 'install Homebrew first (https://brew.sh)' '请先安装 Homebrew（https://brew.sh）')"; return 1; }
+    brew install node || true
   else
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 || true
-    ${SUDO_CMD:-} apt-get install -y nodejs >/dev/null 2>&1 || die "failed to install nodejs"
+    # 非 root 时优先 sudo（没装 sudo 就直连 apt-get，失败也只是报错）
+    local sudo_cmd=""
+    if ! is_root; then have sudo && sudo_cmd="sudo"; fi
+    curl -fsSL https://deb.nodesource.com/setup_22.x | $sudo_cmd bash - >/dev/null 2>&1 || true
+    $sudo_cmd apt-get install -y nodejs >/dev/null 2>&1 || true
   fi
-  have node || die "$(lc 'node install failed' 'node 安装失败')"
+  have node && return 0
+  err "$(lc 'node install failed' 'node 安装失败')"
+  return 1
 }
 
-ensure_npm() { ensure_node; have npm || die "$(lc 'npm not found' '未找到 npm')"; }
+ensure_npm() {
+  ensure_node || return 1
+  have npm && return 0
+  err "$(lc 'npm not found' '未找到 npm')"
+  return 1
+}
 
 install_pi() {
   if have pi; then info "$(lc 'pi already installed, updating' 'pi 已安装，检查更新')"; pi update >/dev/null 2>&1 || true; return 0; fi
   # npm 优先：完全非交互。官方 install.sh 末尾会问 "Start pi now?" 且默认 Y，
   # 管道模式下会把 pi 启动进安装流程卡住。
-  ensure_npm && npm install -g --ignore-scripts @earendil-works/pi-coding-agent && return 0
+  if ensure_npm; then
+    npm install -g --ignore-scripts @earendil-works/pi-coding-agent && return 0
+  fi
   have curl && curl -fsSL https://pi.dev/install.sh | sh
 }
 install_omo() {
@@ -327,9 +347,9 @@ install_codex() {
 install_grok() {
   export PATH="$HOME/.grok/bin:$PATH"
   if have grok; then info "$(lc 'grok already installed' 'grok 已安装')"; return 0; fi
-  run_official https://x.ai/cli/install.sh
+  run_official https://x.ai/cli/install.sh || return 1
   export PATH="$HOME/.grok/bin:$PATH"
-  have grok || die "$(lc 'grok install failed' 'grok 安装失败')"
+  have grok || { err "$(lc 'grok install failed' 'grok 安装失败')"; return 1; }
 }
 # musl 系统（OpenWrt/iStoreOS/Alpine 等）检测。
 # 官方安装器靠 "ldd --version | grep musl" 判 musl，但 OpenWrt 的 busybox
@@ -398,6 +418,7 @@ install_opencode() {
 # 安装后清 bash 命令路径缓存并确认二进制真实可用：
 # npm 重装会把 bin 换位置，bash 缓存的旧路径（如 /usr/local/bin/codex）导致
 # "No such file or directory"，hash -r 后用真实路径再探测。
+# 返回 0 仅当二进制真实可执行；否则返回 1，让安装阶段如实报 FAIL。
 post_install_check() {
   local a="$1" bin path bindir
   bin="$(agent_bin "$a")"
@@ -441,7 +462,8 @@ post_install_check() {
       return 0
     fi
   done
-  warn "$(lc "$bin not on PATH yet; open a new shell or re-login" "$bin 尚不在 PATH；请新开终端或重新登录")"
+  err "$(lc "$bin not installed (install step did not produce a runnable binary)" "$bin 未安装成功（安装步骤没有产出可执行文件）")"
+  return 1
 }
 
 # link_into_path <src> <name>：把 src 软链到一个“本来就存在于 PATH、且大多数 shell
@@ -469,14 +491,17 @@ install_agent() {
   step "$(lc "install $(agent_title "$a")" "安装 $(agent_title "$a")")"
   if [ "$SKIP_INSTALL" -eq 1 ]; then info "$(lc 'skip-install: not touching the binary' '--skip-install：跳过安装')"; return 0; fi
   if [ "$DRY_RUN" -eq 1 ]; then info "$(lc 'dry-run: would install' 'dry-run：将安装') $(agent_title "$a")"; return 0; fi
+  local rc=0
   case "$a" in
-    pi) install_pi ;;
-    omo) install_omo ;;
-    claude) install_claude ;;
-    codex) install_codex ;;
-    grok) install_grok ;;
-    opencode) install_opencode ;;
+    pi) install_pi || rc=$? ;;
+    omo) install_omo || rc=$? ;;
+    claude) install_claude || rc=$? ;;
+    codex) install_codex || rc=$? ;;
+    grok) install_grok || rc=$? ;;
+    opencode) install_opencode || rc=$? ;;
   esac
+  # 安装命令自身失败就不再探测二进制（避免把“装失败”报成 OK）
+  [ "$rc" -eq 0 ] || return "$rc"
   post_install_check "$a"
 }
 
@@ -575,8 +600,10 @@ json_escape() {
 write_pi_like() {
   local agent_dir="$2" provider="$3"
   local mfile="$agent_dir/models.json" sfile="$agent_dir/settings.json"
-  mkdir -p "$agent_dir"
-  backup_file "$mfile"; backup_file "$sfile"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$agent_dir"
+    backup_file "$mfile"; backup_file "$sfile"
+  fi
 
   local mjson sjson tmpm
   mjson="$(build_pi_models_json "$provider")"
@@ -667,8 +694,10 @@ write_claude() {
   # Claude Code 自己在 base 后拼 /v1/messages，必须写不带 /v1 的根地址
   local base_clean="${BASE_URL%/}"
   base_clean="${base_clean%/v1}"
-  mkdir -p "$dir"
-  backup_file "$f"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$dir"
+    backup_file "$f"
+  fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-c.XXXXXX")"
   if have node; then
     CLAUDE_FILE="$f" CLAUDE_OUT="$tmp" CLAUDE_BASE="$base_clean" CLAUDE_KEY="$API_KEY" CLAUDE_MODEL="$model" \
@@ -732,8 +761,10 @@ write_codex() {
   [ -n "$model" ] || model="gpt-5.5"
   # wire_api：默认 responses（OpenAI 官方），部分网关只支持 chat
   local wire="${CODEX_WIRE_API:-responses}"
-  mkdir -p "$dir"
-  backup_file "$cf"; backup_file "$af"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$dir"
+    backup_file "$cf"; backup_file "$af"
+  fi
   local base_nov1="${BASE_URL%/}"
   base_nov1="${base_nov1%/v1}"
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-x.XXXXXX")"
@@ -762,8 +793,10 @@ write_grok() {
   [ -z "$model" ] && [ -n "$MODELS" ] && model="$(printf '%s' "$MODELS" | cut -d, -f1)"
   [ -n "$model" ] || model="grok-4.7"
   local alias="${GROK_ALIAS:-main}"
-  mkdir -p "$HOME/.grok"
-  backup_file "$f"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$HOME/.grok"
+    backup_file "$f"
+  fi
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-g.XXXXXX")"
   {
     printf '[cli]\ninstaller = "internal"\n\n'
@@ -788,8 +821,8 @@ write_opencode() {
   local f="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
   local model="${MODEL:-}"
   [ -z "$model" ] && [ -n "$MODELS" ] && model="$(printf '%s' "$MODELS" | cut -d, -f1)"
-  mkdir -p "$(dirname "$f")"
-  backup_file "$f"
+  [ "$DRY_RUN" -eq 1 ] || mkdir -p "$(dirname "$f")"
+  [ "$DRY_RUN" -eq 1 ] || backup_file "$f"
   local provider provider_name npm_pkg
   case "$(printf '%s' "$BASE_URL" | tr 'A-Z' 'a-z')" in
     *openrouter.ai*) provider="openrouter"; provider_name="OpenRouter"; npm_pkg="" ;;
@@ -802,24 +835,31 @@ write_opencode() {
       provider_name="$(printf '%s' "$BASE_URL" | sed -E 's#^https?://##; s#/.*$##')"
       npm_pkg="@ai-sdk/openai-compatible" ;;
   esac
-  # V2 检测：用户显式 AICLI_OPENCODE_V2=1，或已装二进制 >= 2.0，或配置里已有 providers 键
+  # V2 检测：用户显式 AICLI_OPENCODE_V2，或已装二进制 major >= 2，或配置里已有 providers 键。
+  # 注意 `opencode --version` 输出形如 "opencode v2.0.26"（带前缀），不能锚定 ^2。
+  # dry-run 下不执行二进制（它会自建 cache/state/log 目录），只按配置判断。
   local ocv=1
   local prov_upper; prov_upper="$(printf '%s' "$provider" | tr 'a-z-' 'A-Z_')"
   if [ -n "${AICLI_OPENCODE_V2:-}" ]; then
     case "$AICLI_OPENCODE_V2" in 1|true|yes) ocv=2 ;; *) ocv=1 ;; esac
-  elif have opencode; then
-    ocv="$(opencode --version 2>/dev/null | grep -qE '^2\.' && printf 2 || printf 1)"
+  elif [ "$DRY_RUN" -eq 0 ] && have opencode; then
+    local ocout
+    ocout="$(opencode --version 2>/dev/null || true)"
+    case "$(printf '%s' "$ocout" | sed -nE 's/.*[^0-9]([0-9]+)\.[0-9]+.*/\1/p' | head -1)" in
+      ''|1) ocv=1 ;;
+      *) ocv=2 ;;
+    esac
+    if [ "$ocv" = "1" ] && grep -q '"providers"' "$f" 2>/dev/null; then ocv=2; fi
   elif grep -q '"providers"' "$f" 2>/dev/null; then
     ocv=2
   fi
 
+  local env_var="AICLI_${prov_upper}_API_KEY"
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/aicli-o.XXXXXX")"
   if [ "$ocv" = "2" ]; then
     # ---- OpenCode V2：providers/settings/package + {env:} 凭据引用 ----
-    # key 不落盘：写入 {env:VAR} 引用，并把真实 key 放进该 env 变量。
-    # shellcheck disable=SC2155
-    local env_var="AICLI_${prov_upper}_API_KEY"
-    have node || true
+    # key 不落盘：写入 {env:VAR} 引用，真实 key 在写盘后导出到 shell 配置
+    # （导出与是否有 node 无关，见函数末尾）。
     if have node; then
     OC_FILE="$f" OC_OUT="$tmp" OC_PROVIDER="$provider" OC_NAME="$provider_name" \
     OC_PACKAGE="aisdk:${npm_pkg:-@ai-sdk/openai-compatible}" \
@@ -841,24 +881,6 @@ write_opencode() {
       if(env.OC_DEFAULT)cfg.model=env.OC_PROVIDER+"/"+env.OC_DEFAULT;
       fs.writeFileSync(env.OC_OUT,JSON.stringify(cfg,null,2)+"\n");
     '
-    if [ "$DRY_RUN" -eq 0 ]; then
-      # 把真实 key 写入 shell 配置（export AICLI_XXX_API_KEY），配置文件只留引用
-      local shellrc; shellrc="$(detect_shellrc)"
-      if ! grep -q "^export ${env_var}=" "$shellrc" 2>/dev/null; then
-        printf '\n# %s gateway key (added by ai-cli-setup)\nexport %s=%s\n' "$provider" "$env_var" "'$API_KEY'" >> "$shellrc"
-        info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 ${env_var}（key 不写入 opencode.json）")"
-      else
-        # 更新已有值
-        python3 - "$shellrc" "$env_var" "$API_KEY" <<'PYK' 2>/dev/null || true
-import sys, re
-path, var, val = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(path).read()
-s = re.sub(r"^export %s=.*$" % var, "export %s='%s'" % (var, val), s, flags=re.M)
-open(path, "w").write(s)
-PYK
-        info "$(lc "updated $env_var in $shellrc" "已更新 $shellrc 中的 $env_var")"
-      fi
-    fi
     fi   # have node (V2)
   else
     # ---- OpenCode V1：provider/options/npm，key 直写 ----
@@ -933,9 +955,55 @@ PYK
   [ -s "$tmp" ] || { err "$(lc 'failed to build opencode.json' '生成 opencode.json 失败')"; rm -f "$tmp"; return 1; }
   if [ "$DRY_RUN" -eq 1 ]; then info "dry-run: $f"; rm -f "$tmp"; return 0; fi
   write_600 "$f" "$tmp"
+  if [ "$ocv" = "2" ]; then
+    # 配置里只有 {env:VAR} 引用，真实 key 必须落到 shell 配置，否则 opencode 拿不到凭据。
+    export_oc_key "$env_var" "$provider"
+  fi
   ok "$(lc "wrote $f" "已写入 $f") [v$ocv]"
   info "$(lc 'provider' 'provider')  $provider  $(lc 'default model' '默认模型')  ${model:-(none)}"
 }
+
+# 把 OpenCode V2 的网关密钥写进 shell 配置（配置文件只留 {env:} 引用）。
+# 有 node 时用 node 做精确改写，否则纯 bash/python3 兜底；都没有则追加一行。
+export_oc_key() {
+  local env_var="$1" provider="$2" shellrc
+  shellrc="$(detect_shellrc)"
+  [ -n "$shellrc" ] || return 0
+  if [ ! -f "$shellrc" ]; then
+    mkdir -p "$(dirname "$shellrc")" 2>/dev/null || true
+    : > "$shellrc" 2>/dev/null || return 0
+  fi
+  if grep -q "^export ${env_var}=" "$shellrc" 2>/dev/null; then
+    if have node; then
+      SHELLRC="$shellrc" ENVVAR="$env_var" KEYVAL="$API_KEY" node -e '
+        const fs=require("fs"),e=process.env;
+        const re=new RegExp("^export "+e.ENVVAR+"=.*$","m");
+        const v="export "+e.ENVVAR+"="+JSON.stringify(e.KEYVAL).replace(/^"|"$/g,"\x27").replace(/\x27/g,"\x27\\\x27\x27");
+        fs.writeFileSync(e.SHELLRC, fs.readFileSync(e.SHELLRC,"utf8").replace(re, v));
+      ' 2>/dev/null || true
+    elif have python3; then
+      python3 - "$shellrc" "$env_var" "$API_KEY" <<'PYK' 2>/dev/null || true
+import sys, re
+path, var, val = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+s = re.sub(r"^export %s=.*$" % var, "export %s='%s'" % (var, val.replace("'", "'\\''")), s, flags=re.M)
+open(path, "w").write(s)
+PYK
+    else
+      # 无 node/python3：先删旧行再追加，避免留下两条互相覆盖的 export
+      local rest; rest="$(grep -v "^export ${env_var}=" "$shellrc" 2>/dev/null || true)"
+      { printf '%s\n' "$rest"; printf 'export %s=%s\n' "$env_var" "'$API_KEY'"; } > "${shellrc}.aicli.tmp" \
+        && mv -f "${shellrc}.aicli.tmp" "$shellrc" || rm -f "${shellrc}.aicli.tmp"
+    fi
+    info "$(lc "updated $env_var in $shellrc" "已更新 $shellrc 中的 $env_var")"
+  else
+    printf '\n# %s gateway key (added by ai-cli-setup)\nexport %s=%s\n' "$provider" "$env_var" "'$API_KEY'" >> "$shellrc"
+    info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 ${env_var}（key 不写入 opencode.json）")"
+  fi
+  # 写进 shell 配置只对新开的 shell 生效；当前终端里的 opencode 会拿不到凭据。
+  info "$(lc "current shell: run this first" "当前终端先执行")  export ${env_var}='$API_KEY'"
+}
+
 
 configure_agent() {
   local a="$1"
