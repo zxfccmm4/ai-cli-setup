@@ -259,6 +259,17 @@ agent_needs_models() { case "$1" in pi|omo|opencode) return 0 ;; *) return 1 ;; 
 # 配置是否需要单个默认模型
 agent_needs_model() { case "$1" in claude|codex|grok|opencode) return 0 ;; *) return 1 ;; esac; }
 
+# 该 agent 在当前系统上是否根本装不了/跑不起来（用于“优雅跳过”而不是失败）。
+# musl 软路由（OpenWrt/iStoreOS）无法直接运行 Node.js：pi/omo/codex 都依赖它。
+# 返回 0 = 跑不了（应 SKIP）；返回 1 = 可以尝试安装。
+agent_unrunnable_here() {
+  local a="$1"
+  [ "$OS" = "linux" ] || return 1
+  is_musl_system || return 1
+  have node && return 1          # 用户可能已自行装了 musl 版 node，尊重之
+  case "$a" in pi|omo|codex) return 0 ;; *) return 1 ;; esac
+}
+
 # ============================================================
 # 7. 安装（全自研：官方 installer / npm，不依赖 zxfccmm4 仓库）
 # ============================================================
@@ -274,7 +285,7 @@ ensure_node() {
   have node && return 0
   # OpenWrt/musl：没有 apt，glibc 的 Node 也跑不起来，明确报可理解的错
   if is_musl_system; then
-    die "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian docker container or skip agents that need it (pi/omo)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian Docker 容器里装 node，或跳过需要它的 agent（pi/omo）')"
+    die "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian/Alpine docker container or skip agents that need it (pi/omo/codex)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian/Alpine Docker 容器里装 node，或跳过需要它的 agent（pi/omo/codex）')"
   fi
   warn "$(lc 'node not found; installing Node.js via nodesource (needs root)' '未找到 node；通过 nodesource 安装 Node.js（需要 root）')"
   if [ "$OS" = "macos" ]; then
@@ -399,7 +410,10 @@ post_install_check() {
   for bindir in "$HOME/.local/bin" "$HOME/.grok/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
     if [ -x "$bindir/$bin" ]; then
       ok "$(agent_title "$a") -> $bindir/$bin"
-      # 确保以后每个 shell 都能找到。OpenWrt/ash 不读 .bashrc：优先写 /etc/profile.d/
+      # 1) 本脚本本次运行用得到：立即把该目录塞进当前 PATH
+      case ":$PATH:" in *":$bindir:"*) ;; *) PATH="$bindir:$PATH" ;; esac
+      export PATH
+      # 2) 确保以后每个 shell 都能找到。OpenWrt/ash 不读 .bashrc：优先写 /etc/profile.d/
       local sub="${bindir#"$HOME"/}"
       local line="export PATH=\"\$HOME/$sub:\$PATH\""
 
@@ -416,11 +430,38 @@ post_install_check() {
           info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
         fi
       fi
+      # 3) 关键：写 profile.d 只对“之后新开的登录 shell”生效，当前正在跑的这个 shell
+      #    永远不会重读 profile。BusyBox/OpenWrt 上软链进总是存在于 PATH 的目录
+      #    （/usr/local/bin 或 /usr/bin），让用户当前终端与新终端都能直接敲命令。
+      if link_into_path "$bindir/$bin" "$bin"; then
+        info "$(lc "linked $bin -> $LINKED_INTO (already on PATH; works in the current shell)" "已软链 $bin -> ${LINKED_INTO}（该目录已在 PATH；当前终端即可直接使用）")"
+        return 0
+      fi
       info "$(lc "current shell: run this first" "当前终端先执行")  export PATH=\"$bindir:\$PATH\""
       return 0
     fi
   done
   warn "$(lc "$bin not on PATH yet; open a new shell or re-login" "$bin 尚不在 PATH；请新开终端或重新登录")"
+}
+
+# link_into_path <src> <name>：把 src 软链到一个“本来就存在于 PATH、且大多数 shell
+# 无需重读 profile 即可解析”的目录，返回 0 表示成功（LINKED_INTO 记录目标目录）。
+# 找不到可写目录时返回 1，由调用方退回“export PATH”提示。
+LINKED_INTO=""
+link_into_path() {
+  local src="$1" name="$2" d
+  [ -x "$src" ] || return 1
+  LINKED_INTO=""
+  for d in /usr/local/bin /usr/bin /bin; do
+    [ -d "$d" ] && [ -w "$d" ] || continue
+    # 只覆盖指向同一二进制的链接或已失效链接；不碰用户自己的真实文件
+    if [ -e "$d/$name" ] && [ ! -L "$d/$name" ]; then continue; fi
+    if ln -sf "$src" "$d/$name" 2>/dev/null; then
+      LINKED_INTO="$d"
+      return 0
+    fi
+  done
+  return 1
 }
 
 install_agent() {
@@ -517,14 +558,16 @@ toml_escape() {
 }
 
 json_escape() {
-  local s="${1:-}"
-  if have node; then node -e 'console.log(JSON.stringify(process.argv[1]))' "$s"
-  elif have python3; then python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$s"
-  else
-    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
-    s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
-    printf '"%s"' "$s"
+  local s="${1:-}" out=""
+  # 注意：node/python3 “存在但执行失败”时也会返回空——所以先取输出、校验非空，
+  # 失败再落到纯 bash 转义，避免把空串写进配置（软路由上曾出现 key 变空）。
+  if have node; then out="$(node -e 'console.log(JSON.stringify(process.argv[1]))' "$s" 2>/dev/null || true)"
+  elif have python3; then out="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$s" 2>/dev/null || true)"
   fi
+  if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
 }
 
 # --- pi / omo：结构相同（models.json + settings.json） ---
@@ -557,27 +600,45 @@ write_pi_like() {
 }
 
 build_pi_models_json() {
-  local provider="$1"
-  PI_PROVIDER="$provider" PI_BASE_URL="$BASE_URL" PI_API_KEY="$API_KEY" PI_MODELS="$MODELS" \
-  node -e '
-    const env = process.env;
-    const models = (env.PI_MODELS||"").split(",").map(s=>s.trim()).filter(Boolean);
-    const out = {providers:{}};
-    out.providers[env.PI_PROVIDER] = {
-      baseUrl: env.PI_BASE_URL, api: "openai-completions",
-      apiKey: env.PI_API_KEY,
-      models: models.map(m=>({id:m, name:m}))
-    };
-    process.stdout.write(JSON.stringify(out,null,2)+"\n");
-  ' 2>/dev/null || \
-  PI_PROVIDER="$provider" PI_BASE_URL="$BASE_URL" PI_API_KEY="$API_KEY" PI_MODELS="$MODELS" \
-  python3 -c '
+  local provider="$1" out=""
+  if have node; then
+    out="$(PI_PROVIDER="$provider" PI_BASE_URL="$BASE_URL" PI_API_KEY="$API_KEY" PI_MODELS="$MODELS" \
+      node -e '
+        const env = process.env;
+        const models = (env.PI_MODELS||"").split(",").map(s=>s.trim()).filter(Boolean);
+        const out = {providers:{}};
+        out.providers[env.PI_PROVIDER] = {
+          baseUrl: env.PI_BASE_URL, api: "openai-completions",
+          apiKey: env.PI_API_KEY,
+          models: models.map(m=>({id:m, name:m}))
+        };
+        process.stdout.write(JSON.stringify(out,null,2)+"\n");
+      ' 2>/dev/null || true)"
+  elif have python3; then
+    out="$(PI_PROVIDER="$provider" PI_BASE_URL="$BASE_URL" PI_API_KEY="$API_KEY" PI_MODELS="$MODELS" \
+      python3 -c '
 import json,os
 env=os.environ
 models=[m.strip() for m in env.get("PI_MODELS","").split(",") if m.strip()]
 out={"providers":{env["PI_PROVIDER"]:{"baseUrl":env["PI_BASE_URL"],"api":"openai-completions","apiKey":env["PI_API_KEY"],"models":[{"id":m,"name":m} for m in models]}}}
 print(json.dumps(out,indent=2))
-'
+' 2>/dev/null || true)"
+  fi
+  if [ -n "$out" ] && [ "${out#\{}" != "$out" ]; then printf '%s' "$out"; return 0; fi
+  # 纯 bash 兜底（OpenWrt/BusyBox 等无 node/python3）：手工拼 JSON 并转义
+  local m first=1
+  printf '{\n  "providers": {\n    "%s": {\n' "$(printf '%s' "$provider" | sed 's/"/\\"/g')"
+  printf '      "baseUrl": %s,\n' "$(json_escape "$BASE_URL")"
+  printf '      "api": "openai-completions",\n'
+  printf '      "apiKey": %s,\n' "$(json_escape "$API_KEY")"
+  printf '      "models": [\n'
+  for m in $(printf '%s' "$MODELS" | tr ',' ' '); do
+    [ -n "$m" ] || continue
+    [ "$first" = "1" ] || printf ',\n'
+    printf '        { "id": %s, "name": %s }' "$(json_escape "$m")" "$(json_escape "$m")"
+    first=0
+  done
+  printf '\n      ]\n    }\n  }\n}\n'
 }
 
 # defaultModel 为纯模型 id（不带 provider 前缀）
@@ -1256,6 +1317,15 @@ main() {
       warn "$(lc "$(agent_title "$a") is Linux/WSL only; skipping install" "$(agent_title "$a") 仅支持 Linux/WSL；跳过安装")"
       eval "time_inst_${a}=0"
       eval "status_inst_${a}=SKIP"
+      eval "skip_note_${a}=\"$(lc 'Linux/WSL only' '仅 Linux/WSL')\""
+      continue
+    fi
+    if agent_unrunnable_here "$a"; then
+      warn "$(lc "$(agent_title "$a") needs Node.js, which cannot run on this musl system (OpenWrt/iStoreOS); skipping install" "$(agent_title "$a") 依赖 Node.js，本 musl 系统（OpenWrt/iStoreOS）无法直接运行；跳过安装")"
+      info "$(lc "run it in a Debian/Alpine container instead, or install a musl Node.js first" "请改用 Debian/Alpine 容器运行，或先自行安装 musl 版 Node.js")"
+      eval "time_inst_${a}=0"
+      eval "status_inst_${a}=SKIP"
+      eval "skip_note_${a}=\"$(lc 'needs Node.js (musl)' '需 Node.js（musl）')\""
       continue
     fi
     t0="$(date +%s)"
@@ -1315,7 +1385,8 @@ main() {
     if [ "$st" = "OK" ]; then
       printf '  %s  %-12s %s\n' "${GREEN}✓${RESET}" "$(agent_title "$a2")" "${DIM}$note${RESET}" >&2
     elif [ "$st" = "SKIP" ]; then
-      printf '  %s  %-12s %s\n' "${YELLOW}-${RESET}" "$(agent_title "$a2")" "${DIM}$note ($(lc 'macOS: config only' 'macOS: 仅写配置'))${RESET}" >&2
+      local snote; eval "snote=\${skip_note_${a2}:-}"
+      printf '  %s  %-12s %s\n' "${YELLOW}-${RESET}" "$(agent_title "$a2")" "${DIM}$note${snote:+ · $snote} ($(lc 'config only' '仅写配置'))${RESET}" >&2
     else
       printf '  %s  %-12s %s\n' "${RED}✗${RESET}" "$(agent_title "$a2")" "${RED}$(lc "$note failed" "$note 失败")${RESET}" >&2
     fi

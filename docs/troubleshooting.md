@@ -60,6 +60,39 @@ nvm install 22
 brew install node
 ```
 
+### 软路由（OpenWrt / iStoreOS 等 musl）上装完 `claude` / `grok` 提示 `not found`
+
+装完后命令找不到，多是因为当前终端还没重读 `PATH`。脚本现在会自动把二进制
+软链到 `/usr/local/bin`（或 `/usr/bin`）——这些目录本来就在 `PATH` 里，**当前终端
+与新终端都能直接敲命令**。若仍是 `not found`，手动执行：
+
+```bash
+export PATH="$HOME/.local/bin:$HOME/.grok/bin:$HOME/.opencode/bin:$PATH"
+```
+
+### 软路由上 Pi / OmO / Codex 被跳过（`needs Node.js (musl)`）
+
+不是 bug。OpenWrt/iStoreOS 是 musl 系统，无法直接运行官方 glibc 版 Node.js，
+而 Pi / OmO / Codex 依赖它。脚本会在**安装阶段**直接标记为 `-`（跳过、不算失败），
+但**仍会写入它们的配置文件**，方便你在别处（如 Debian/Alpine 容器）运行。
+
+想在本机用，请在容器里装 node：
+
+```bash
+docker run -it --rm -v "$PWD:/w" -w /w debian:bookworm bash
+# 容器内：apt-get update && apt-get install -y nodejs npm
+```
+
+### 软路由上 OmO 配置失败 `生成 models.json 失败（需要 node/python3）`
+
+已在较新版本修复：Pi / OmO 的 `models.json` 现在有**纯 bash 兜底**，
+即使系统完全没有 node/python3 也能正确生成（与 OpenCode 的兜底一致）。
+用最新脚本重跑即可：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-setup.sh | bash
+```
+
 ---
 
 ## 2. 网络类
