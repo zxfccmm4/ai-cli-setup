@@ -263,11 +263,13 @@ jobs:
 
       - name: Install failure is reported as failure
         run: |
-          # 造一个只有基础命令、没有 curl/wget/node/npm 的环境：pi 必须报 FAIL，
-          # 且 claude（只写配置）仍应成功 —— 证明单个 agent 失败不会中断全局。
+          # 造一个没有 curl/wget/node/npm/bun 的环境：所有安装都必须失败，
+          # 但脚本不得因第一个失败就退出 —— 每个 agent 都要被真正尝试过，
+          # 最后按 agent 汇总。用 "==> install <Agent>" 的出现次数证明这一点。
+          # 注：不在 shim 里放 curl/wget，因此这几个 agent 必然失败，与系统无关。
           SHIM="$RUNNER_TEMP/shim/bin"
           mkdir -p "$SHIM"
-          for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty dirname head tail cat wc ln rm sleep python3; do
+          for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty dirname head tail cat wc ln rm sleep python3 seq awk; do
             p="$(type -P "$c" 2>/dev/null || command -v "$c" 2>/dev/null)" || continue
             case "$p" in /*) ln -sf "$p" "$SHIM/$c" ;; esac
           done
@@ -275,13 +277,20 @@ jobs:
           export XDG_CONFIG_HOME="$HOME/.config"
           mkdir -p "$HOME"
           set +e
-          PATH="$SHIM" "$SHIM/bash" ./ai-cli-setup.sh pi,claude -y \
+          PATH="$SHIM" "$SHIM/bash" ./ai-cli-setup.sh pi,grok,opencode -y \
             --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > /tmp/fail.out 2>&1
           rc=$?
           set -e
+          # 1) 有 agent 失败 → 退出码非零（不再把失败报成成功）
           [ "$rc" -ne 0 ] || { echo "::error::run should exit non-zero when an agent fails"; cat /tmp/fail.out; exit 1; }
+          # 2) 汇总里必须如实写 FAIL，而不是 OK
           grep -q 'install failed' /tmp/fail.out || { echo "::error::no FAIL in summary"; cat /tmp/fail.out; exit 1; }
-          test -f "$HOME/.claude/settings.json" || { echo "::error::later agent was not configured"; exit 1; }
+          grep -q '✓  Pi ' /tmp/fail.out && { echo "::error::failed install reported as OK"; cat /tmp/fail.out; exit 1; }
+          # 3) 首个 agent 失败后，后面两个仍被尝试安装（证明没有中断全局）
+          for a in Pi 'Grok Build' OpenCode; do
+            grep -q "==> install $a" /tmp/fail.out \
+              || { echo "::error::$a was never attempted (run aborted early)"; cat /tmp/fail.out; exit 1; }
+          done
           echo "failure isolation OK"
 
       - name: dry-run writes nothing
