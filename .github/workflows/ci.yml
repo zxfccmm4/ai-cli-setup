@@ -90,6 +90,8 @@ jobs:
           test -f "$HOME/.pi/agent/models.json"
           test -f "$HOME/.pi/agent/settings.json"
           test -f "$HOME/.omo/agent/models.json"
+          test -f "$HOME/.omp/agent/models.yml"
+          test -f "$HOME/.omp/agent/config.yml"
           test -f "$HOME/.codex/config.toml"
           test -f "$HOME/.codex/auth.json"
           test -f "$HOME/.grok/config.toml"
@@ -124,8 +126,17 @@ jobs:
           grep -q 'sk-test-123456' "$HOME/.codex/auth.json"
           grep -q 'api_key = "sk-test-123456"' "$HOME/.grok/config.toml"
           echo "codex/grok contents OK"
+          # omp：models.yml 的 provider 块 + config.yml 的 modelRoles.default
+          grep -q '^providers:$' "$HOME/.omp/agent/models.yml"
+          grep -q '^  gw-example-com:$' "$HOME/.omp/agent/models.yml"
+          grep -q 'baseUrl: "https://gw.example.com/v1"' "$HOME/.omp/agent/models.yml"
+          grep -q 'apiKey: "sk-test-123456"' "$HOME/.omp/agent/models.yml"
+          grep -q '^      - id: "gpt-5"$' "$HOME/.omp/agent/models.yml"
+          grep -q '^  default: gw-example-com/gpt-5$' "$HOME/.omp/agent/config.yml"
+          echo "omp contents OK"
           # 敏感文件权限必须是 600
-          for f in "$HOME/.pi/agent/models.json" "$HOME/.grok/config.toml" \
+          for f in "$HOME/.pi/agent/models.json" "$HOME/.omp/agent/models.yml" \
+                   "$HOME/.omp/agent/config.yml" "$HOME/.grok/config.toml" \
                    "$HOME/.codex/auth.json" "$HOME/.config/opencode/opencode.json"; do
             perm="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"
             [ "$perm" = "600" ] || { echo "::error::$f has mode $perm, want 600"; exit 1; }
@@ -138,7 +149,7 @@ jobs:
           export XDG_CONFIG_HOME="$HOME/.config"
           export AICLI_ASSUME_TTY=1
           mkdir -p "$HOME"
-          printf '2\n6\nhttps://gw.example.com/v1\nsk-ci-zh\nm1,m2\n' \
+          printf '2\n7\nhttps://gw.example.com/v1\nsk-ci-zh\nm1,m2\n' \
             | ./ai-cli-setup.sh --skip-install > /tmp/i1.out 2>&1
           grep -q '要安装哪些' /tmp/i1.out
           grep -q '已选择：OpenCode' /tmp/i1.out
@@ -151,7 +162,7 @@ jobs:
           export XDG_CONFIG_HOME="$HOME/.config"
           export AICLI_ASSUME_TTY=1
           mkdir -p "$HOME"
-          printf '1\n9\nzz\n6\nhttps://gw.example.com/v1\nsk-x\nm1\n' \
+          printf '1\n9\nzz\n7\nhttps://gw.example.com/v1\nsk-x\nm1\n' \
             | ./ai-cli-setup.sh --skip-install > /tmp/i2.out 2>&1
           grep -q 'invalid choice: 9' /tmp/i2.out
           grep -q 'selected: OpenCode' /tmp/i2.out
@@ -181,6 +192,38 @@ jobs:
             if (!c.provider.openrouter) throw new Error("openrouter missing");
             console.log("merge OK");
           '
+
+      - name: omp merge preserves other providers and roles
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome9"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          mkdir -p "$HOME/.omp/agent"
+          cat > "$HOME/.omp/agent/models.yml" <<'YML'
+          providers:
+            keepme:
+              baseUrl: http://other/v1
+              api: openai-completions
+              apiKey: sk-keep
+              models:
+                - id: keep-model
+          YML
+          cat > "$HOME/.omp/agent/config.yml" <<'YML'
+          theme:
+            dark: titanium
+          modelRoles:
+            default: old/model
+            smol: keep/smol
+          YML
+          ./ai-cli-setup.sh omp -y --skip-install \
+            --base-url https://gw.example.com/v1 --api-key sk-omp --models gpt-5
+          grep -q '^  keepme:$' "$HOME/.omp/agent/models.yml"
+          grep -q 'apiKey: sk-keep' "$HOME/.omp/agent/models.yml"
+          [ "$(grep -c '^  [A-Za-z0-9._-]*:$' "$HOME/.omp/agent/models.yml")" = "2" ] \
+            || { echo "::error::provider block duplicated"; exit 1; }
+          grep -q '^  default: gw-example-com/gpt-5$' "$HOME/.omp/agent/config.yml"
+          grep -q '^  smol: keep/smol$' "$HOME/.omp/agent/config.yml"
+          grep -q '^  dark: titanium$' "$HOME/.omp/agent/config.yml"
+          echo "omp merge OK"
 
       - name: Install failure is reported as failure
         run: |

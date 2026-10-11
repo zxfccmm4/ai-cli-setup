@@ -20,7 +20,7 @@
 #
 set -Eeuo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 NAME="ai-cli-setup"
 
 # ============================================================
@@ -228,18 +228,19 @@ detect_shellrc() {
 # ============================================================
 # 6. agent 清单
 # ============================================================
-ALL_AGENTS="pi omo claude codex grok opencode"
+ALL_AGENTS="pi omo omp claude codex grok opencode"
 
-agent_valid() { case "$1" in pi|omo|claude|codex|grok|opencode) return 0 ;; *) return 1 ;; esac; }
+agent_valid() { case "$1" in pi|omo|omp|claude|codex|grok|opencode) return 0 ;; *) return 1 ;; esac; }
 agent_title() {
   case "$1" in
-    pi) printf 'Pi' ;; omo) printf 'OmO' ;; claude) printf 'Claude Code' ;;
+    pi) printf 'Pi' ;; omo) printf 'OmO' ;; omp) printf 'OMP' ;; claude) printf 'Claude Code' ;;
     codex) printf 'Codex CLI' ;; grok) printf 'Grok Build' ;; opencode) printf 'OpenCode' ;;
   esac
 }
 agent_homepage() {
   case "$1" in
     pi) printf 'https://pi.dev' ;; omo) printf 'https://omo.dev' ;;
+    omp) printf 'https://omp.sh' ;;
     claude) printf 'https://claude.com/product/claude-code' ;;
     codex) printf 'https://github.com/openai/codex' ;;
     grok) printf 'https://x.ai/cli' ;; opencode) printf 'https://opencode.ai' ;;
@@ -248,26 +249,31 @@ agent_homepage() {
 # 安装命令（官方渠道）
 agent_bin() {
   case "$1" in
-    pi) printf 'pi' ;; omo) printf 'omo' ;; claude) printf 'claude' ;;
+    pi) printf 'pi' ;; omo) printf 'omo' ;; omp) printf 'omp' ;; claude) printf 'claude' ;;
     codex) printf 'codex' ;; grok) printf 'grok' ;; opencode) printf 'opencode' ;;
   esac
 }
 # 该 agent 是否只在 Linux 安装
 agent_linux_only() { case "$1" in claude) return 0 ;; *) return 1 ;; esac; }
 # 配置是否需要模型列表（多模型注册）
-agent_needs_models() { case "$1" in pi|omo|opencode) return 0 ;; *) return 1 ;; esac; }
+agent_needs_models() { case "$1" in pi|omo|omp|opencode) return 0 ;; *) return 1 ;; esac; }
 # 配置是否需要单个默认模型
-agent_needs_model() { case "$1" in claude|codex|grok|opencode) return 0 ;; *) return 1 ;; esac; }
+agent_needs_model() { case "$1" in claude|codex|grok|omp|opencode) return 0 ;; *) return 1 ;; esac; }
 
 # 该 agent 在当前系统上是否根本装不了/跑不起来（用于“优雅跳过”而不是失败）。
-# musl 软路由（OpenWrt/iStoreOS）无法直接运行 Node.js：pi/omo/codex 都依赖它。
+# musl 软路由（OpenWrt/iStoreOS）无法直接运行 Node.js：pi/omo/omp/codex 都依赖它。
 # 返回 0 = 跑不了（应 SKIP）；返回 1 = 可以尝试安装。
 agent_unrunnable_here() {
   local a="$1"
   [ "$OS" = "linux" ] || return 1
   is_musl_system || return 1
   have node && return 1          # 用户可能已自行装了 musl 版 node，尊重之
-  case "$a" in pi|omo|codex) return 0 ;; *) return 1 ;; esac
+  case "$a" in
+    # omp 有官方预编译二进制、也可走 bun（不依赖 node），交给安装步骤自己判断
+    omp) have bun && return 1; return 0 ;;
+    pi|omo|codex) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # ============================================================
@@ -292,7 +298,7 @@ ensure_node() {
   have node && return 0
   # OpenWrt/musl：没有 apt，glibc 的 Node 也跑不起来，明确报可理解的错
   if is_musl_system; then
-    err "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian/Alpine docker container or skip agents that need it (pi/omo/codex)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian/Alpine Docker 容器里装 node，或跳过需要它的 agent（pi/omo/codex）')"
+    err "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian/Alpine docker container or skip agents that need it (pi/omo/omp/codex)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian/Alpine Docker 容器里装 node，或跳过需要它的 agent（pi/omo/omp/codex）')"
     return 1
   fi
   warn "$(lc 'node not found; installing Node.js via nodesource (needs root)' '未找到 node；通过 nodesource 安装 Node.js（需要 root）')"
@@ -350,6 +356,23 @@ install_grok() {
   run_official https://x.ai/cli/install.sh || return 1
   export PATH="$HOME/.grok/bin:$PATH"
   have grok || { err "$(lc 'grok install failed' 'grok 安装失败')"; return 1; }
+}
+# omp（@oh-my-pi/pi-coding-agent）：官方 installer 优先（自带 sha256 校验与可运行性
+# 自检），失败再退 npm/bun 全局安装。二进制落在 ~/.local/bin，bun 安装落在 ~/.bun/bin。
+install_omp() {
+  export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+  if have omp; then info "$(lc 'omp already installed, updating' 'omp 已安装，检查更新')"; omp update >/dev/null 2>&1 || true; return 0; fi
+  if have curl; then
+    curl -fsSL https://omp.sh/install | sh && { export PATH="$HOME/.local/bin:$PATH"; have omp && return 0; }
+  fi
+  if have bun; then
+    bun install -g @oh-my-pi/pi-coding-agent && return 0
+  fi
+  if ensure_npm; then
+    npm install -g @oh-my-pi/pi-coding-agent && return 0
+  fi
+  err "$(lc 'omp install failed (need curl+sh, bun, or npm)' 'omp 安装失败（需要 curl+sh、bun 或 npm）')"
+  return 1
 }
 # musl 系统（OpenWrt/iStoreOS/Alpine 等）检测。
 # 官方安装器靠 "ldd --version | grep musl" 判 musl，但 OpenWrt 的 busybox
@@ -495,6 +518,7 @@ install_agent() {
   case "$a" in
     pi) install_pi || rc=$? ;;
     omo) install_omo || rc=$? ;;
+    omp) install_omp || rc=$? ;;
     claude) install_claude || rc=$? ;;
     codex) install_codex || rc=$? ;;
     grok) install_grok || rc=$? ;;
@@ -1004,6 +1028,170 @@ PYK
   info "$(lc "current shell: run this first" "当前终端先执行")  export ${env_var}='$API_KEY'"
 }
 
+# --- omp：写 ~/.omp/agent/models.yml（providers）+ config.yml（modelRoles.default） ---
+# omp 不支持环境变量插值（apiKey: ${VAR} 不会被展开），key 只能明文写入，故强制 600。
+write_omp() {
+  local dir="$HOME/.omp/agent"
+  local mfile="$dir/models.yml" cfile="$dir/config.yml"
+  local model="${MODEL:-}"
+  [ -z "$model" ] && [ -n "$MODELS" ] && model="$(printf '%s' "$MODELS" | cut -d, -f1 | tr -d ' \t\r\n')"
+  local provider; provider="$(provider_from_host)"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$dir"
+    backup_file "$mfile"; backup_file "$cfile"
+  fi
+  local tmpm; tmpm="$(mktemp "${TMPDIR:-/tmp}/aicli-omp-m.XXXXXX")"
+  local tmpc; tmpc="$(mktemp "${TMPDIR:-/tmp}/aicli-omp-c.XXXXXX")"
+
+  yaml_omp_provider_block "$provider" > "$tmpm.blk"
+  yaml_upsert_block "$mfile" "$provider" "$tmpm.blk" > "$tmpm"
+  rm -f "$tmpm.blk"
+  omp_set_default_role "$cfile" "$provider" "$model" > "$tmpc"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    info "dry-run: $mfile / $cfile"
+    rm -f "$tmpm" "$tmpc"; return 0
+  fi
+  [ -s "$tmpm" ] || { err "$(lc 'failed to build models.yml' '生成 models.yml 失败')"; rm -f "$tmpm" "$tmpc"; return 1; }
+  write_600 "$mfile" "$tmpm"
+  ok "$(lc "wrote $mfile" "已写入 $mfile")"
+  if [ -s "$tmpc" ]; then
+    write_600 "$cfile" "$tmpc"
+    ok "$(lc "wrote $cfile" "已写入 $cfile")"
+  else
+    warn "$(lc 'no default model chosen; config.yml untouched' '未指定默认模型；config.yml 未改动')"
+    rm -f "$tmpc"
+  fi
+  info "$(lc 'provider' 'provider')  $provider  $(lc 'default model' '默认模型')  ${model:-(none)}"
+}
+
+# YAML 双引号标量转义（够用于 baseUrl / apiKey / 模型 id）
+yaml_quote() {
+  local s="${1:-}"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf '"%s"' "$s"
+}
+
+# YAML 映射键：安全字符（字母数字 . _ -）直接裸写，否则加双引号。
+# 裸写更贴近 omp 自己 `omp config set` 的产物，也便于文本级合并时匹配。
+yaml_key() {
+  case "${1:-}" in
+    ''|*[!A-Za-z0-9._-]*) yaml_quote "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# 生成 <provider> 的 models.yml 片段（缩进 2 空格，属于 providers: 之下）
+yaml_omp_provider_block() {
+  local provider="$1" m
+  printf '  %s:\n' "$(yaml_key "$provider")"
+  printf '    baseUrl: %s\n' "$(yaml_quote "$BASE_URL")"
+  printf '    api: openai-completions\n'
+  printf '    apiKey: %s\n' "$(yaml_quote "$API_KEY")"
+  printf '    models:\n'
+  for m in $(printf '%s' "$MODELS" | tr ',' ' '); do
+    [ -n "$m" ] || continue
+    printf '      - id: %s\n' "$(yaml_quote "$m")"
+    printf '        name: %s\n' "$(yaml_quote "$m")"
+  done
+}
+
+# yaml_upsert_block <file> <key> <blockfile>：把 blockfile 内容作为 file 里顶层
+# `providers:` 映射中 key 的子块写入（已存在则整块替换），其余内容原样保留。
+# 纯 awk 实现（OpenWrt/BusyBox 无 yq）；文件不存在/为空时新建 providers 段。
+yaml_upsert_block() {
+  local file="$1" key="$2" block="$3"
+  if [ ! -s "$file" ]; then
+    printf 'providers:\n'
+    cat "$block"
+    return 0
+  fi
+  awk -v key="$(yaml_key "$key")" -v keyq="$(yaml_quote "$key")" -v blockfile="$block" '
+    BEGIN {
+      while ((getline l < blockfile) > 0) blk[++nb] = l
+      inprov = 0; skipping = 0; inserted = 0
+    }
+    {
+      line = $0
+      if (line ~ /^providers:[[:space:]]*$/) { inprov = 1; print; next }
+      if (inprov && line ~ /^[^[:space:]#]/) {
+        if (!inserted) { for (i = 1; i <= nb; i++) print blk[i]; inserted = 1 }
+        inprov = 0
+      }
+      if (inprov) {
+        if (line == "  " key ":" || line == "  " keyq ":") { skipping = 1; next }
+        if (skipping) {
+          if (line ~ /^  [^[:space:]]/) { skipping = 0 }
+          else { next }
+        }
+      }
+      print
+    }
+    END {
+      if (inprov && !inserted) { for (i = 1; i <= nb; i++) print blk[i]; inserted = 1 }
+      if (!inserted) { print "providers:"; for (i = 1; i <= nb; i++) print blk[i] }
+    }
+  ' "$file"
+}
+
+# omp_set_default_role <config.yml> <provider> <model>：保留 config.yml 的其它设置，
+# 只把 modelRoles.default 指向 provider/model。优先用 `omp config set`（保留 smol/slow
+# 等其它角色并经 schema 校验），omp 不可用时退回文本级块替换。
+omp_set_default_role() {
+  local cfile="$1" provider="$2" model="$3"
+  [ -n "$model" ] || return 0
+  local selector="$provider/$model"
+  # `omp config set modelRoles` 会整体替换该记录，所以必须先成功读出已有角色
+  # 再合并；读不到就退回文本级替换（那个分支只改 default 一行，绝不丢角色）。
+  if [ "$DRY_RUN" -eq 0 ] && have omp && have python3; then
+    local roles_raw roles merged
+    if roles_raw="$(omp config get modelRoles --json 2>/dev/null)"; then
+      roles="$(printf '%s' "$roles_raw" | python3 -c '
+import json,sys
+try:
+    d = json.load(sys.stdin)
+    v = d.get("value") or {}
+    print(json.dumps(v) if isinstance(v, dict) else "{}")
+except Exception:
+    print("{}")
+' 2>/dev/null || true)"
+      [ -n "$roles" ] || roles="{}"
+      merged="$(ROLES="$roles" SEL="$selector" python3 -c '
+import json,os
+r = json.loads(os.environ["ROLES"] or "{}")
+r["default"] = os.environ["SEL"]
+print(json.dumps(r))
+' 2>/dev/null || true)"
+      if [ -n "$merged" ] && omp config set modelRoles "$merged" >/dev/null 2>&1; then
+        # omp 写它自己的 config.yml；只有确实读到非空内容才算成功，
+        # 否则（例如 omp 指向了别的 profile）退回下面的文本级替换。
+        if [ -s "$cfile" ]; then
+          cat "$cfile"
+          return 0
+        fi
+      fi
+    fi
+  fi
+  # 文本级兜底：只改 modelRoles 下的 default 行，smol/slow 等其它角色原样保留。
+  local sel_q; sel_q="$(yaml_quote "$selector")"
+  if [ -s "$cfile" ]; then
+    awk -v sel="$sel_q" '
+      BEGIN { inroles = 0; seen = 0; hadroles = 0 }
+      /^modelRoles:[[:space:]]*$/ {
+        inroles = 1; hadroles = 1; print; next
+      }
+      inroles && /^[^[:space:]#]/ { inroles = 0 }
+      inroles && /^[[:space:]]+default:[[:space:]]/ { print "  default: " sel; seen = 1; next }
+      { print }
+      END {
+        if (hadroles && !seen) print "  default: " sel
+        if (!hadroles) { print "modelRoles:"; print "  default: " sel }
+      }
+    ' "$cfile"
+  else
+    printf 'modelRoles:\n  default: %s\n' "$sel_q"
+  fi
+}
 
 configure_agent() {
   local a="$1"
@@ -1014,6 +1202,7 @@ configure_agent() {
   case "$a" in
     pi)     write_pi_like pi "$HOME/.pi/agent" "$(provider_from_host)" ;;
     omo)    write_pi_like omo "$HOME/.omo/agent" "$(provider_from_host)" ;;
+    omp)    write_omp ;;
     claude) write_claude ;;
     codex)  write_codex ;;
     grok)   write_grok ;;
@@ -1257,6 +1446,7 @@ cmd_doctor() {
   printf '%s\n' "${BOLD}$(lc 'config files' '配置文件')${RESET}"
   local f
   for f in "$HOME/.pi/agent/models.json" "$HOME/.omo/agent/models.json" \
+           "$HOME/.omp/agent/models.yml" "$HOME/.omp/agent/config.yml" \
            "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "$HOME/.codex/config.toml" \
            "$HOME/.grok/config.toml" "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"; do
     if [ -f "$f" ]; then printf '  %s  %s\n' "${GREEN}✓${RESET}" "$f"
@@ -1277,6 +1467,7 @@ ${BOLD}$(lc 'USAGE' '用法')${RESET}
 ${BOLD}$(lc 'AGENTS' 'agent')${RESET}
   pi          Pi                https://pi.dev            npm/@earendil-works/pi-coding-agent
   omo         OmO               https://omo.dev           get.omo.dev/install.sh
+  omp         OMP               https://omp.sh            omp.sh/install（回退 bun/npm）
   claude      Claude Code       claude.com                claude.ai/install.sh（仅 Linux/WSL）
   codex       Codex CLI         openai/codex              npm/@openai/codex
   grok        Grok Build        x.ai/cli                  x.ai/cli/install.sh
@@ -1286,8 +1477,8 @@ ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
   -y, --yes              $(lc 'non-interactive' '非交互模式')
       --base-url URL     $(lc 'API endpoint base URL' '接口 base URL')
       --api-key KEY      $(lc 'API key (masked input: first3+***+last3)' 'API key（掩码输入：前3+***+后3）')
-      --models a,b,c     $(lc 'model ids to register (pi/omo/opencode)' '注册的模型 id（pi/omo/opencode）')
-      --model ID         $(lc 'default model (claude/codex/grok/opencode)' '默认模型（claude/codex/grok/opencode）')
+      --models a,b,c     $(lc 'model ids to register (pi/omo/omp/opencode)' '注册的模型 id（pi/omo/omp/opencode）')
+      --model ID         $(lc 'default model (claude/codex/grok/omp/opencode)' '默认模型（claude/codex/grok/omp/opencode）')
       --skip-install     $(lc 'configure only' '只配置，不安装')
       --dry-run          $(lc 'print plan only' '只打印计划')
       --fail-fast        $(lc 'stop at first failure' '首败即停')
@@ -1304,6 +1495,7 @@ ${BOLD}$(lc 'ENVIRONMENT' '环境变量')${RESET}
 ${BOLD}$(lc 'CONFIG FILES' '配置文件')${RESET}
   pi       ~/.pi/agent/{models,settings}.json
   omo      ~/.omo/agent/{models,settings}.json
+  omp      ~/.omp/agent/{models.yml,config.yml}
   claude   ~/.claude/settings.json (env: ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL)
   codex    ~/.codex/{config.toml,auth.json}
   grok     ~/.grok/config.toml
@@ -1337,7 +1529,7 @@ parse_args() {
       -V|--version) printf '%s %s\n' "$NAME" "$VERSION"; exit 0 ;;
       list|doctor|help) COMMAND="$1"; shift ;;
       all) SELECTED="$(printf '%s' "$ALL_AGENTS" | tr ' ' ',')"; shift ;;
-      pi|omo|claude|codex|grok|opencode)
+      pi|omo|omp|claude|codex|grok|opencode)
         if [ -n "$SELECTED" ]; then SELECTED="$SELECTED,$1"; else SELECTED="$1"; fi; shift ;;
       *,*)
         local parts p ok=1
