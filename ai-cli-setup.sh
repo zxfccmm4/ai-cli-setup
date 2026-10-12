@@ -308,17 +308,87 @@ run_official() {  # run_official <url> [args...]
   if have curl; then curl -fsSL "$url" | bash -s -- "$@"; else wget -qO- "$url" | bash -s -- "$@"; fi
 }
 
+# --- Node.js 获取 ---------------------------------------------------------
+# 优先用系统已有的 node / Homebrew / nodesource；都拿不到时用官方 tarball
+# 装一份“免 root、免 Homebrew”的私有运行时（macOS 没装 brew 时唯一可行路径）。
+# 目录沿用 pi 官方 installer 的布局（<data>/pi-node/current），两者可共用。
+node_standalone_base_dir() {
+  if [ -n "${XDG_DATA_HOME:-}" ]; then printf '%s/pi-node' "$XDG_DATA_HOME"
+  else printf '%s/.local/share/pi-node' "$HOME"; fi
+}
+node_standalone_bin_dir() { printf '%s/current/bin' "$(node_standalone_base_dir)"; }
+
+load_node_standalone() {
+  local bindir; bindir="$(node_standalone_bin_dir)"
+  [ -x "$bindir/node" ] || return 1
+  PATH="$bindir:$PATH"; export PATH
+  hash -r 2>/dev/null || true
+  return 0
+}
+
+# install_node_standalone：下载 + sha256 校验 + 解包到 node_standalone_base_dir。
+install_node_standalone() {
+  local platform arch base tmp file verifier
+  case "$OS" in
+    macos) platform=darwin ;;
+    linux) platform=linux ;;
+    *) return 1 ;;
+  esac
+  case "$ARCH" in
+    x86_64) arch=x64 ;;
+    arm64) arch=arm64 ;;
+    *) return 1 ;;
+  esac
+  have curl || { err "$(lc 'standalone Node.js install needs curl' '独立安装 Node.js 需要 curl')"; return 1; }
+  if have sha256sum; then verifier=sha256sum
+  elif have shasum; then verifier=shasum
+  else err "$(lc 'need sha256sum or shasum to verify the Node.js download' '需要 sha256sum 或 shasum 校验 Node.js 下载')"; return 1; fi
+
+  base="$(node_standalone_base_dir)"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/aicli-node.XXXXXX")" || return 1
+  info "$(lc "installing standalone Node.js (no root, no Homebrew) into $base" "正在安装独立 Node.js（免 root / Homebrew）到 $base")"
+  curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/SHASUMS256.txt" \
+    "https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt" || { rm -rf "$tmp"; return 1; }
+  # 只挑本平台的 .tar.gz：.tar.xz 在精简系统上可能缺 xz
+  file="$(awk -v suffix="-$platform-$arch.tar.gz" \
+    'index($2, "node-v") == 1 && substr($2, length($2) - length(suffix) + 1) == suffix { print $2; exit }' \
+    "$tmp/SHASUMS256.txt")"
+  if [ -z "$file" ]; then
+    rm -rf "$tmp"
+    err "$(lc "no Node.js build published for ${platform}-${arch}" "官方没有 ${platform}-${arch} 的 Node.js 构建")"
+    return 1
+  fi
+  curl -fsSL --connect-timeout 10 --max-time 600 -o "$tmp/$file" \
+    "https://nodejs.org/dist/latest-v22.x/$file" || { rm -rf "$tmp"; return 1; }
+  if [ "$verifier" = "sha256sum" ]; then
+    (cd "$tmp" && awk -v f="$file" '$2 == f' SHASUMS256.txt | sha256sum -c -) >&2 || { rm -rf "$tmp"; err "$(lc 'Node.js checksum mismatch' 'Node.js 校验和不匹配')"; return 1; }
+  else
+    (cd "$tmp" && awk -v f="$file" '$2 == f' SHASUMS256.txt | shasum -a 256 -c -) >&2 || { rm -rf "$tmp"; err "$(lc 'Node.js checksum mismatch' 'Node.js 校验和不匹配')"; return 1; }
+  fi
+  mkdir -p "$base" || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$tmp/$file" -C "$base" || { rm -rf "$tmp"; return 1; }
+  rm -f "$base/current"
+  ln -s "$base/${file%.tar.gz}" "$base/current" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+  ok "$(lc "Node.js -> $base/current/bin/node" "Node.js -> $base/current/bin/node")"
+  return 0
+}
+
 ensure_node() {
   have node && return 0
+  # 上次已经装过独立 Node（但当前 shell 没 source rc）→ 直接复用，别再下 50MB
+  if load_node_standalone && have node; then
+    info "$(lc "reusing standalone Node.js at $(node_standalone_bin_dir)" "复用已装的独立 Node.js：$(node_standalone_bin_dir)")"
+    return 0
+  fi
   # OpenWrt/musl：没有 apt，glibc 的 Node 也跑不起来，明确报可理解的错
   if is_musl_system; then
     err "$(lc 'this musl system (OpenWrt etc.) cannot run Node.js here; install node inside a Debian/Alpine docker container or skip agents that need it (pi/omo/omp/codex)' '此 musl 系统（OpenWrt 等）无法直接运行 Node.js；请在 Debian/Alpine Docker 容器里装 node，或跳过需要它的 agent（pi/omo/omp/codex）')"
     return 1
   fi
-  warn "$(lc 'node not found; installing Node.js via nodesource (needs root)' '未找到 node；通过 nodesource 安装 Node.js（需要 root）')"
+  warn "$(lc 'node not found; installing Node.js (Homebrew/nodesource, else a no-root standalone build)' '未找到 node；开始安装 Node.js（Homebrew/nodesource，失败则改用免 root 的独立包）')"
   if [ "$OS" = "macos" ]; then
-    have brew || { err "$(lc 'install Homebrew first (https://brew.sh)' '请先安装 Homebrew（https://brew.sh）')"; return 1; }
-    brew install node || true
+    have brew && { brew install node || true; }
   else
     # 非 root 时优先 sudo（没装 sudo 就直连 apt-get，失败也只是报错）
     local sudo_cmd=""
@@ -327,6 +397,11 @@ ensure_node() {
     $sudo_cmd apt-get install -y nodejs >/dev/null 2>&1 || true
   fi
   have node && return 0
+  # 兜底：官方 tarball 独立安装。macOS 上没装 Homebrew 时这是唯一可行路径。
+  if install_node_standalone && load_node_standalone; then
+    persist_path "$(node_standalone_bin_dir)"
+    return 0
+  fi
   err "$(lc 'node install failed' 'node 安装失败')"
   return 1
 }
@@ -334,18 +409,65 @@ ensure_node() {
 ensure_npm() {
   ensure_node || return 1
   have npm && return 0
+  # 独立安装的 Node 自带 npm；PATH 未生效时直接从 node 同级目录取。
+  local bindir; bindir="$(node_standalone_bin_dir)"
+  if [ -x "$bindir/npm" ]; then
+    PATH="$bindir:$PATH"; export PATH
+    hash -r 2>/dev/null || true
+    have npm && return 0
+  fi
   err "$(lc 'npm not found' '未找到 npm')"
   return 1
 }
 
 install_pi() {
   if have pi; then info "$(lc 'pi already installed, updating' 'pi 已安装，检查更新')"; pi update >/dev/null 2>&1 || true; return 0; fi
-  # npm 优先：完全非交互。官方 install.sh 末尾会问 "Start pi now?" 且默认 Y，
-  # 管道模式下会把 pi 启动进安装流程卡住。
+  # npm 优先：完全非交互，且不会接管终端。
+  # 官方 install.sh 在 stdout 是 tty 时会 `exec pi`（"Start pi now? [Y/n]" 默认 Y），
+  # 把本脚本的终端吞掉——用户看到的就是那个 pi TUI 界面卡住。所以只有在 npm
+  # 不可用时才走官方 installer，并且用 subshell + 重定向彻底隔断它的交互。
   if ensure_npm; then
-    npm install -g --ignore-scripts @earendil-works/pi-coding-agent && return 0
+    if npm install -g --ignore-scripts @earendil-works/pi-coding-agent; then return 0; fi
+    warn "$(lc 'npm install failed; falling back to the official installer' 'npm 安装失败；改用官方 installer')"
   fi
-  have curl && curl -fsSL https://pi.dev/install.sh | sh
+  run_official_isolated https://pi.dev/install.sh
+}
+
+# 官方 installer 的危险行为：pi 的 install.sh 在 stdout 是 tty 时会 `exec pi`，
+# 直接把本脚本的终端交给 pi 的 TUI（用户看到的就是“装完卡在 pi 界面”）；
+# 而它的确认提示读的是 /dev/tty，脚本无法喂输入 → 挂死。
+# 注意：只重定向 stdout 不够 —— 只要进程还有控制终端，`( : <>/dev/tty )` 就成立。
+# 必须用 setsid 让子进程脱离控制终端，它才会走非交互分支。
+detach_mechanism() {
+  if have setsid; then printf 'setsid'
+  elif have perl; then printf 'perl'
+  elif have python3; then printf 'python3'
+  fi
+}
+
+# detach_run <mechanism> <cmd> [args...]：在无控制终端的新会话里执行 cmd。
+detach_run() {
+  local m="$1"; shift
+  case "$m" in
+    setsid)  setsid "$@" ;;
+    perl)    perl -e 'use POSIX (); POSIX::setsid() or exit 1; exec @ARGV or exit 1' "$@" ;;
+    python3) python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1],sys.argv[1:])' "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+# run_official_isolated <url>：跑官方安装脚本，但剥夺它的控制终端。
+run_official_isolated() {
+  local url="$1" m
+  need_dl || return 1
+  m="$(detach_mechanism)"
+  if [ -z "$m" ]; then
+    err "$(lc 'cannot run the official installer without hijacking the terminal (needs setsid, perl, or python3); install Node.js + npm first' '无法在不劫持终端的前提下运行官方 installer（需要 setsid、perl 或 python3）；请先装好 Node.js + npm')"
+    return 1
+  fi
+  if have curl; then curl -fsSL "$url" | detach_run "$m" bash
+  else wget -qO- "$url" | detach_run "$m" bash
+  fi
 }
 install_omo() {
   export OMO_INSTALL_ALLOW_SUDO=1   # 服务器常以 root 运行
@@ -452,6 +574,37 @@ install_opencode() {
   ensure_npm && npm install -g opencode-ai
 }
 
+# persist_path <dir>：让“以后新开的 shell”都能找到 dir 里的命令。
+# OpenWrt/ash 不读 .bashrc，所以优先写 /etc/profile.d/；否则写用户 shell rc。
+persist_path() {
+  local bindir="$1" sub line
+  [ -n "$bindir" ] || return 0
+  case "$bindir" in
+    "$HOME"/*) sub="${bindir#"$HOME"/}" ;;
+    *) sub="" ;;
+  esac
+  if [ -z "$sub" ]; then
+    line="export PATH=\"$bindir:\$PATH\""
+  else
+    line="export PATH=\"\$HOME/$sub:\$PATH\""
+  fi
+  local marker="${sub:-$bindir}"
+  if [ -d /etc/profile.d ] && [ -w /etc/profile.d ]; then
+    local prof="/etc/profile.d/ai-cli-setup.sh"
+    if ! grep -q "$marker" "$prof" 2>/dev/null; then
+      printf '%s\n' "$line" >> "$prof"
+      info "$(lc "added PATH to $prof" "已把 PATH 写入 $prof")"
+    fi
+    return 0
+  fi
+  local rcfile; rcfile="$(detect_shellrc)"
+  if [ -n "$rcfile" ] && ! grep -q "$marker" "$rcfile" 2>/dev/null; then
+    printf '\n# added by ai-cli-setup\n%s\n' "$line" >> "$rcfile"
+    info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
+  fi
+  return 0
+}
+
 # 安装后清 bash 命令路径缓存并确认二进制真实可用：
 # npm 重装会把 bin 换位置，bash 缓存的旧路径（如 /usr/local/bin/codex）导致
 # "No such file or directory"，hash -r 后用真实路径再探测。
@@ -465,29 +618,14 @@ post_install_check() {
     return 0
   fi
   # 二进制可能在本次安装新增的 PATH 目录里，当前 shell 尚未包含
-  for bindir in "$HOME/.local/bin" "$HOME/.grok/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
+  for bindir in "$HOME/.local/bin" "$(node_standalone_bin_dir)" "$HOME/.grok/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
     if [ -x "$bindir/$bin" ]; then
       ok "$(agent_title "$a") -> $bindir/$bin"
       # 1) 本脚本本次运行用得到：立即把该目录塞进当前 PATH
       case ":$PATH:" in *":$bindir:"*) ;; *) PATH="$bindir:$PATH" ;; esac
       export PATH
-      # 2) 确保以后每个 shell 都能找到。OpenWrt/ash 不读 .bashrc：优先写 /etc/profile.d/
-      local sub="${bindir#"$HOME"/}"
-      local line="export PATH=\"\$HOME/$sub:\$PATH\""
-
-      if [ -d /etc/profile.d ] && [ -w /etc/profile.d ]; then
-        local prof="/etc/profile.d/ai-cli-setup.sh"
-        if ! grep -q "$sub" "$prof" 2>/dev/null; then
-          printf '%s\n' "$line" >> "$prof"
-          info "$(lc "added PATH to $prof" "已把 PATH 写入 $prof")"
-        fi
-      else
-        local rcfile; rcfile="$(detect_shellrc)"
-        if [ -n "$rcfile" ] && ! grep -q "$sub" "$rcfile" 2>/dev/null; then
-          printf '\n# added by ai-cli-setup\n%s\n' "$line" >> "$rcfile"
-          info "$(lc "added PATH to $rcfile" "已把 PATH 写入 $rcfile")"
-        fi
-      fi
+      # 2) 让以后每个 shell 都找得到（写 profile.d / shell rc）
+      persist_path "$bindir"
       # 3) 关键：写 profile.d 只对“之后新开的登录 shell”生效，当前正在跑的这个 shell
       #    永远不会重读 profile。BusyBox/OpenWrt 上软链进总是存在于 PATH 的目录
       #    （/usr/local/bin 或 /usr/bin），让用户当前终端与新终端都能直接敲命令。
@@ -1570,6 +1708,17 @@ main() {
   esac
 
   printf '\n%s\n' "${BOLD}$NAME $VERSION${RESET} — $(lc 'AI agent installer + configurator' 'AI agent 安装 + 配置')${RESET}" >&2
+
+  # 把“上次装过但当前 shell 还没 source rc”的目录先加进 PATH：否则 have <bin>
+  # 判定为未安装，会重复下载/重装（独立 Node 尤其明显，一次 50MB）。
+  local d
+  for d in "$HOME/.local/bin" "$(node_standalone_bin_dir)" "$HOME/.grok/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
+    case ":$PATH:" in *":$d:"*) continue ;; esac
+    [ -d "$d" ] || continue
+    PATH="$d:$PATH"
+  done
+  export PATH
+  hash -r 2>/dev/null || true
 
   if interactive_run; then prompt_language; fi
 

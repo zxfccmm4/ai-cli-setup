@@ -45,11 +45,12 @@ apt-get install -y curl        # Debian/Ubuntu
 apk add curl                   # Alpine
 ```
 
-### `node not found; installing Node.js via nodesource (needs root)`
+### `node not found; installing Node.js ...`
 
 Pi / OmO / Codex 通过 npm 安装，OMP 通过官方 installer（回退 bun / npm），都需要 Node。
-脚本会尝试自动装（Linux 走 nodesource + apt，macOS 走 Homebrew）。自动装失败时会报
-`node install failed`，请手动装：
+脚本按顺序尝试：已有的 `node` → macOS 的 Homebrew / Linux 的 nodesource+apt →
+**官方 tarball 独立安装**（免 root、免 Homebrew，装到 `~/.local/share/pi-node/current`，
+带 sha256 校验）。全部失败才会报 `node install failed`，那时请手动装：
 
 ```bash
 # nvm
@@ -59,6 +60,17 @@ nvm install 22
 # 或 brew
 brew install node
 ```
+
+> 独立安装的 Node 只作用于本脚本与之后新开的 shell（脚本会写 PATH 到 shell rc）。
+> 想立刻在当前终端用：`export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"`。
+
+### Pi 装完直接进了 pi 的界面 / 卡在那个 TUI
+
+上游 `pi.dev/install.sh` 在 stdout 是终端时会问 `Start pi now? [Y/n]`（默认 Y）并
+`exec pi`，把调用方的终端交给 pi 的 TUI。本脚本默认走 npm 安装（不会发生这件事）；
+只有 npm 不可用才回退官方 installer，并**用 `setsid` 剥夺它的控制终端**，让它走非交互分支。
+若看到 `cannot run the official installer without hijacking the terminal`，
+说明系统缺 `setsid`/`perl`/`python3`：先手动装好 Node.js + npm 再重跑。
 
 ### OMP 安装
 

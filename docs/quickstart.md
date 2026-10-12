@@ -11,7 +11,7 @@
 | 系统 | Linux 或 macOS（Windows 建议 WSL2） |
 | Shell | bash 3.2+（macOS 自带即可，**不需要** `brew install bash`） |
 | 网络 | 能访问各 agent 的官方安装源 |
-| 命令 | `curl` 或 `wget`；写 Pi / OmO / Codex / OMP 的配置建议有 `node`（无 node 时脚本有纯 bash 兜底） |
+| 命令 | `curl` 或 `wget`；`node` 缺失时脚本会自己装（macOS 走 Homebrew，失败则免 root 装官方 tarball 到 `~/.local/share/pi-node`；Linux 走 nodesource+apt，同样有独立包兜底） |
 
 先体检一下：
 

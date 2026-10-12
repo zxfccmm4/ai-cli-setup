@@ -102,7 +102,7 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 
 | Agent | 官方安装渠道 | 配置文件位置 | 配置格式 | 特别说明 |
 | :--- | :--- | :--- | :---: | :--- |
-| **Pi** | npm `@earendil-works/pi-coding-agent`（回退 `pi.dev/install.sh`） | `~/.pi/agent/{models,settings}.json` | `JSON` | 自动配置 Provider 与默认模型 |
+| **Pi** | npm `@earendil-works/pi-coding-agent`（npm 不可用才回退 `pi.dev/install.sh`，并隔离其终端交互） | `~/.pi/agent/{models,settings}.json` | `JSON` | 自动配置 Provider 与默认模型 |
 | **OmO** | `get.omo.dev`（回退 npm） | `~/.omo/agent/{models,settings}.json` | `JSON` | root 用户下自动授权执行 |
 | **OMP** | `omp.sh/install`（回退 bun / npm） | `~/.omp/agent/{models.yml,config.yml}` | `YAML` | 保留 `modelRoles` 其它角色与主题设置；密钥强制 600 |
 | **Claude Code** | `claude.ai/install.sh`（回退 npm） | `~/.claude/settings.json` | `JSON` | 安装仅支持 Linux/WSL；macOS 仅写配置 |
@@ -216,6 +216,9 @@ musl 系统若误安装了 glibc 预编译二进制，在动态链接器缺失�
 | `GROK_ALIAS` | Grok CLI 默认模型别名 | `main` |
 | `GROK_CONTEXT_WINDOW`| Grok CLI 上下文窗口尺寸 | `500000` |
 | `CODEX_WIRE_API` | Codex CLI 协议类型 | `responses` / `chat` |
+
+> `node` 缺失时脚本会自动获取：macOS 先试 Homebrew，Linux 先试 nodesource+apt；
+> 都不可用则免 root 装官方 tarball 到 `~/.local/share/pi-node/current`（sha256 校验）。
 
 ---
 

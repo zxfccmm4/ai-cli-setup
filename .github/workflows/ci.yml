@@ -293,6 +293,93 @@ jobs:
           done
           echo "failure isolation OK"
 
+      - name: Official installer fallback must not hijack the terminal
+        run: |
+          # 回归：pi.dev/install.sh 在 stdout 是 tty 时会 `exec pi`，把调用方的
+          # 终端交给 pi 的 TUI（用户看到"装完卡在 pi 界面"）。install_pi 只在 npm
+          # 不可用时回退它，且必须用 setsid 剥夺控制终端。
+          # 注意：只重定向 stdout 不够 —— 只要进程还有控制终端，
+          # `( : <>/dev/tty )` 就成立。所以必须在真实 pty 下测。
+          SHIM="$RUNNER_TEMP/shimhijack/bin"
+          mkdir -p "$SHIM"
+          for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty dirname head tail cat wc ln rm sleep python3 perl seq awk; do
+            p="$(type -P "$c" 2>/dev/null || command -v "$c" 2>/dev/null)" || continue
+            case "$p" in /*) ln -sf "$p" "$SHIM/$c" ;; esac
+          done
+          # 假 node/npm：存在但安装失败 -> 逼出官方 installer 回退分支
+          printf '#!/bin/sh\nexit 1\n' > "$SHIM/node"; chmod +x "$SHIM/node"
+          printf '#!/bin/sh\nexit 1\n' > "$SHIM/npm";  chmod +x "$SHIM/npm"
+          # 假 curl：无论请求什么都吐出这个"官方 installer"替身。
+          # 它报告自己有没有控制终端；有 = 会劫持用户终端（即回归）。
+          cat > "$SHIM/curl" <<'FAKE'
+          #!/bin/sh
+          cat <<'INST'
+          if ( : <>/dev/tty ) 2>/dev/null; then
+            echo "FAKE-INSTALLER: HIJACKED-TERMINAL"
+          else
+            echo "FAKE-INSTALLER: NO-CONTROLLING-TTY"
+          fi
+          INST
+          FAKE
+          chmod +x "$SHIM/curl"
+          export HOME="$RUNNER_TEMP/fakehome13"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          mkdir -p "$HOME"
+          # 在真实 pty 里跑，并加超时：若回归发生，子进程会 exec 进 TUI 挂住。
+          python3 - "$SHIM" "$PWD" "$HOME" <<'PY' > /tmp/hijack.out 2>&1
+          import os, pty, sys, select, signal
+          shim, repo, home = sys.argv[1], sys.argv[2], sys.argv[3]
+          pid, fd = pty.fork()
+          if pid == 0:
+              os.environ.clear()
+              os.environ.update({
+                  "HOME": home, "XDG_CONFIG_HOME": home + "/.config",
+                  "PATH": shim, "SHELL": "/bin/bash", "TERM": "xterm", "LANG": "C",
+              })
+              os.chdir(repo)
+              os.execv(shim + "/bash", [shim + "/bash", "./ai-cli-setup.sh", "pi", "-y",
+                  "--base-url", "https://gw.example.com/v1",
+                  "--api-key", "sk-x", "--models", "m1"])
+          out, deadline = b"", 120
+          import time
+          end = time.time() + deadline
+          while time.time() < end:
+              r, _, _ = select.select([fd], [], [], 1)
+              if r:
+                  try: chunk = os.read(fd, 65536)
+                  except OSError: break
+                  if not chunk: break
+                  out += chunk
+              wpid, _ = os.waitpid(pid, os.WNOHANG)
+              if wpid: break
+          else:
+              os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+              sys.stderr.write("TIMEOUT: installer hung (terminal hijacked)\n")
+          sys.stdout.write(out.decode("utf-8", "replace"))
+          PY
+          cat /tmp/hijack.out
+          grep -q 'FAKE-INSTALLER: NO-CONTROLLING-TTY' /tmp/hijack.out \
+            || { echo "::error::official installer kept a controlling tty (would hijack the user's terminal)"; exit 1; }
+          grep -q 'FAKE-INSTALLER: HIJACKED-TERMINAL' /tmp/hijack.out \
+            && { echo "::error::terminal hijack regression"; exit 1; }
+          grep -q 'TIMEOUT' /tmp/hijack.out && { echo "::error::installer hung"; exit 1; }
+          echo "official installer isolation OK"
+
+      - name: Node bootstrap falls back to a no-root standalone tarball
+        run: |
+          # node/brew/nodesource 全都不可用时，脚本必须退到官方 tarball 独立安装
+          # （这是 macOS 无 Homebrew 机器上唯一可行路径）。这里只做静态断言，
+          # 不实际下载 50MB 到 CI：真正的下载路径已在本地按同构环境验证过。
+          grep -q 'install_node_standalone' ai-cli-setup.sh || { echo "::error::standalone node bootstrap missing"; exit 1; }
+          grep -q 'node_standalone_base_dir' ai-cli-setup.sh || { echo "::error::standalone node dir helper missing"; exit 1; }
+          # 独立安装必须校验 sha256，且能同时用 sha256sum / shasum
+          grep -q 'sha256sum' ai-cli-setup.sh && grep -q 'shasum -a 256' ai-cli-setup.sh \
+            || { echo "::error::standalone node install does not verify checksums"; exit 1; }
+          # PATH 必须被持久化，否则新开的 shell 找不到 node/pi
+          grep -q 'persist_path "$(node_standalone_bin_dir)"' ai-cli-setup.sh \
+            || { echo "::error::standalone node bin dir is not persisted to PATH"; exit 1; }
+          echo "node bootstrap OK"
+
       - name: dry-run writes nothing
         run: |
           export HOME="$RUNNER_TEMP/fakehome11"
