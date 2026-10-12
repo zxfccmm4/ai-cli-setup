@@ -250,7 +250,10 @@ if [ "$ALL" -eq 1 ]; then
 
   tags="$(git tag --sort=-v:refname | grep -E '^v[0-9]' || true)"
   for t in $tags; do
-    prev="$(git describe --tags --abbrev=0 "${t}^" 2>/dev/null || true)"
+    # 只认版本 tag：仓库里可能存在移动 tag（如滚动发布渠道的 `latest`），
+    # 若让它参与 describe，上一个版本会被解析成 `latest`，导致本版本节
+    # 只覆盖 latest..t 的极少提交、历史版本内容整体丢失。
+    prev="$(git describe --tags --match 'v[0-9]*' --abbrev=0 "${t}^" 2>/dev/null || true)"
     if [ -n "$prev" ]; then range="$prev..$t"; else range="$t"; fi
     tdate="$(git log -1 --format=%cs "$t" 2>/dev/null || echo "$DATE")"
     VERSION="$t" DATE="$tdate" render_section "$range" >> "$out"

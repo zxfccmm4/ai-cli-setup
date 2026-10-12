@@ -57,6 +57,33 @@ jobs:
           ./scripts/changelog.sh --update /tmp/CL.md >/dev/null
           diff /tmp/CL.1 /tmp/CL.md && echo idempotent
 
+      - name: A moving non-version tag must not corrupt CHANGELOG
+        run: |
+          # 回归：滚动发布渠道会创建 `latest` 这个移动 tag。若 changelog.sh 用
+          # 裸 `git describe` 找上一个版本，`latest` 会被当成 prev，导致新版本节
+          # 只覆盖 latest..t 的极少量提交、历史内容整体丢失。
+          # 这里造一个同构场景验证 --match 生效。
+          T="$(mktemp -d)"
+          git init -q "$T/repo"; cd "$T/repo"
+          git config user.email ci@example.com; git config user.name ci
+          for i in 1 2 3 4 5; do echo "$i" > "f$i"; git add .; git commit -qm "feat: c$i"; done
+          first="$(git rev-list --max-parents=0 HEAD)"
+          git tag -a v1.0.0 -m v1.0.0 "$first"
+          # 移动 tag 落在“上一个版本之后、下一个版本之前”
+          git tag -a latest -m latest HEAD~1
+          git tag -a v2.0.0 -m v2.0.0 HEAD
+          prev="$(git describe --tags --match 'v[0-9]*' --abbrev=0 'v2.0.0^')"
+          [ "$prev" = "v1.0.0" ] || { echo "::error::prev resolved to '$prev', want v1.0.0"; exit 1; }
+          n="$(git rev-list --count "$prev"..v2.0.0)"
+          [ "$n" -eq 4 ] || { echo "::error::v2.0.0 section spans $n commits, want 4"; exit 1; }
+          # 反向确认：裸 describe 确实会被 latest 带偏（证明该用例有判别力）
+          bare="$(git describe --tags --abbrev=0 'v2.0.0^')"
+          [ "$bare" = "latest" ] || { echo "::warning::scenario did not reproduce the hazard (got '$bare')"; }
+          grep -q "match 'v\[0-9\]\*'" "$GITHUB_WORKSPACE/scripts/changelog.sh" \
+            || { echo "::error::changelog.sh lost its --match guard"; exit 1; }
+          cd "$GITHUB_WORKSPACE"; rm -rf "$T"
+          echo "moving-tag guard OK"
+
   smoke:
     name: smoke test
     runs-on: ${{ matrix.os }}
