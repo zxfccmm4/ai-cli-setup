@@ -74,5 +74,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
-_No notable changes._
+### 🐛 Bug Fixes
+
+- Pi 安装不再劫持终端，无 Homebrew 的 macOS 也能装 Node ([`86d9774`](https://github.com/zxfccmm4/ai-cli-setup/commit/86d977438d9042d40b6c578257c17680be748b9a))
+
 
