@@ -222,20 +222,30 @@ git tag -a v2.1.0 -m "v2.1.0 — 简要说明"
 git push origin v2.1.0
 ```
 
-`release.yml` 会：
+`release.yml` 有两条渠道：
 
-1. **verify** —— 语法 / shellcheck / 冒烟，不过就不发
-2. **build** —— 产出 `ai-cli-setup.sh`、`changelog.sh`、`CHANGELOG.md`、
-   `README.md`、`LICENSE`、`SHA256SUMS`、`VERSION.txt`，并在 CI 内自校验
-3. **release** —— 从 `CHANGELOG.md` 摘出本版本那节做 release notes，创建 Release
+**稳定版（手动打 tag）** —— 1. **verify** 语法 / shellcheck / 冒烟，不过就不发；
+2. **build** 产出 `ai-cli-setup.sh`、`changelog.sh`、`CHANGELOG.md`、`README.md`、
+`LICENSE`、`SHA256SUMS`、`VERSION.txt`，并在 CI 内自校验；
+3. **release** 从 `CHANGELOG.md` 摘出本版本那节做 release notes，创建 Release。
 
 已发布过的版本可重跑（`gh release edit` + `upload --clobber`）。
 也可以手动 `workflow_dispatch` 只做构建校验、不发布。
 
+**滚动预发布（每次 push main 自动）** —— `rolling` job 重建 `latest` 这个
+移动 tag 的 prerelease：产物始终对应 main 最新提交，标为 prerelease 且
+`--latest=false`，不会抢走稳定版的 "Latest" 徽章。因此**每次提交都会自动更新
+Release**，而稳定版本仍按语义化版本手动发布。
+
+> 注意：`latest` 是**移动 tag**。`changelog.sh` 里用
+> `git describe --match 'v[0-9]*'` 限定只认版本 tag，否则 `latest` 会被当成
+> 上一个版本，导致新版本节只覆盖极少量提交、历史内容丢失。新增任何非版本
+> tag 时都要保持这个 `--match`。
+
 发布后自检：
 
 ```bash
-gh release download v2.1.0 -R zxfccmm4/ai-cli-setup
+gh release download v2.1.1 -R zxfccmm4/ai-cli-setup
 chmod +x ai-cli-setup.sh
 shasum -a 256 -c SHA256SUMS
 ./ai-cli-setup.sh --version
@@ -245,7 +255,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 8. 版本号
 
-`VERSION` 在脚本顶部（当前 `2.1.0`）。改脚本行为就同步 bump，并在
+`VERSION` 在脚本顶部（当前 `2.1.1`）。改脚本行为就同步 bump，并在
 `CHANGELOG.md` 记录；脚本本身不联网检查更新。
 
 ---
