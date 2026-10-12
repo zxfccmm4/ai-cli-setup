@@ -74,8 +74,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 ## [Unreleased]
 
+### ✨ Features
+
+- 新增滚动预发布渠道，每次提交自动更新 Release ([`4f2a054`](https://github.com/zxfccmm4/ai-cli-setup/commit/4f2a05472a70d8d7495ddd39c9aa2e41f90e8fb7))
+
 ### 🐛 Bug Fixes
 
+- changelog.sh 只认版本 tag，避免移动 tag 破坏版本节 ([`7ba60bc`](https://github.com/zxfccmm4/ai-cli-setup/commit/7ba60bc265e346ead7343da8c012f0f50e491596))
 - Pi 安装不再劫持终端，无 Homebrew 的 macOS 也能装 Node ([`86d9774`](https://github.com/zxfccmm4/ai-cli-setup/commit/86d977438d9042d40b6c578257c17680be748b9a))
+
+### 🔨 Chores
+
+- bump VERSION 到 2.1.1 ([`4e41efc`](https://github.com/zxfccmm4/ai-cli-setup/commit/4e41efc8ea91e2c4b47985b0983fa8ec29ade7d3))
 
 
