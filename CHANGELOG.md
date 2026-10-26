@@ -33,6 +33,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 ### 🔨 Chores
 
 - bump VERSION 到 2.2.0
+- bump VERSION 到 2.2.1（补上 v2.2.1 发布时漏掉的版本号）
 
 ## [v2.1.0] - 2026-10-12
 
