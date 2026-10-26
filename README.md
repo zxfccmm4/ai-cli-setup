@@ -14,12 +14,23 @@
 
 <br />
 
+**中国大陆网络**（推荐：脚本下载走 CDN，安装走国内镜像）
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/zxfccmm4/ai-cli-setup@main/ai-cli-setup.sh | bash -s -- --cn
+```
+
+**国际 / 可直连 GitHub**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-setup.sh | bash
 ```
 
 一条命令搞定 **Pi**、**OmO**、**OMP**、**Claude Code**、**Codex**、**Grok Build**、**OpenCode** 7 大主流 CLI Agent。<br />
 各走官方渠道安装，原生配置自动生成，无第三方包装脚本，纯 Bash 实现。
+
+> **为什么分两条？** 脚本内置的加速层在 bash 开始执行后才生效，而 `curl` 拉取脚本本身发生在更早一步。
+> 国内直连 `raw.githubusercontent.com` 常被阻断，会卡在第一步、根本进不到加速逻辑 —— 所以大陆用户请用上面的 jsDelivr 版本。
 
 <br />
 </div>
@@ -115,6 +126,25 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 | GitHub Release | 直连 ↔ GitHub 反代 | 先验证响应是真二进制，再比带宽，反代快 50% 才切换 |
 
 若检测到本地代理（Clash 等常见端口），直接全局走代理，优先级最高。
+
+### 第 0 步：脚本本身要先能下载下来
+
+上面三个源都发生在 **bash 开始执行之后**。而 `curl ... | bash` 里的 `curl` 更早一步，
+此时脚本还没运行、加速代码无从生效。国内直连 `raw.githubusercontent.com` 常被阻断，
+会卡在这一步进不到加速逻辑 —— 所以大陆用户请用 jsDelivr 版本（正规 CDN，非第三方反代）：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/zxfccmm4/ai-cli-setup@main/ai-cli-setup.sh | bash -s -- --cn
+```
+
+| 写法 | 适用 | 说明 |
+| :--- | :--- | :--- |
+| `cdn.jsdelivr.net/gh/<repo>@main/...` | 中国大陆 | CDN 缓存，国内可达；`@main` 跟随最新 |
+| `cdn.jsdelivr.net/gh/<repo>@v2.2.0/...` | 需要可复现 | 锁定版本，CI 推荐 |
+| `raw.githubusercontent.com/<repo>/main/...` | 国际 / 可直连 | 官方源，无中间层 |
+
+> `bash -s -- --cn` 是把参数传给管道里的脚本；不加 `--cn` 时脚本也会自动判断国内网络，
+> 显式加上只是更稳妥。
 
 > **为什么不无脑用镜像？**
 > 国内镜像在境外出口上反而更慢（实测日本出口直连 GitHub 3.4 MB/s，反代仅 0.2 MB/s）。

@@ -1891,6 +1891,8 @@ ${BOLD}$(lc 'CN ACCELERATION' '国内加速')${RESET}
   AICLI_NODE_MIRROR   $(lc 'default https://npmmirror.com/mirrors/node' '默认 https://npmmirror.com/mirrors/node')
   AICLI_GH_PROXY      $(lc 'default auto (benchmarked); set a prefix to force, "none" to disable' '默认 auto（自动测速）；可指定反代前缀，或 none 关闭')
   $NAME cn           $(lc 'show the detected acceleration plan' '查看加速检测结果')
+  $(lc 'In mainland China, download this script via CDN first (acceleration only applies after bash starts):' '中国大陆请先用 CDN 下载本脚本（加速在 bash 启动后才生效）：')
+    curl -fsSL https://cdn.jsdelivr.net/gh/zxfccmm4/ai-cli-setup@main/ai-cli-setup.sh | bash -s -- --cn
 
 ${BOLD}$(lc 'CONFIG FILES' '配置文件')${RESET}
   pi       ~/.pi/agent/{models,settings}.json

@@ -20,6 +20,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
   `AICLI_NPM_REGISTRY`、`AICLI_NODE_MIRROR`、`AICLI_GH_PROXY` 环境变量
 - OpenCode 安装器失败时改为直连 GitHub Release 兜底（支持 macOS zip 与 Linux tar.gz）
 - 重写 README：新增「国内网络加速」章节、完整参数表与实测数据
+- README 顶部与 `--help` 新增中国大陆 one-liner（jsDelivr CDN + `--cn`），
+  解决「curl 拉脚本先于加速层生效」的先后依赖问题
 
 ### 🐛 Bug Fixes
 
