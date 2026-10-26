@@ -27,6 +27,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
 
 - 修复 `export NPM_CONFIG_REGISTRY="$(...)"` 触发 SC2155
 - 加速逻辑不写入用户 `~/.npmrc`，仅通过进程环境变量生效
+- nodesource / omp.sh 安装无超时保护，国内不可达时无限挂起——补齐 connect/max 超时，
+  失败立即走镜像独立安装；收紧 GitHub 测速轮次与探针时长
 
 ### 🔨 Chores
 

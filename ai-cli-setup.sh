@@ -345,7 +345,7 @@ is_cn_network() {
 probe_speed() {
   local url="$1" rounds="${2:-2}" i best=0 out sp
   for i in $(seq 1 "$rounds"); do
-    out="$(curl -sSL --connect-timeout 4 --max-time 10 --range 0-1500000 \
+    out="$(curl -sSL --connect-timeout 4 --max-time 8 --range 0-1500000 \
             --speed-limit 1 --speed-time 5 -o /dev/null \
             -w '%{http_code} %{size_download} %{speed_download}' "$url" 2>/dev/null || true)"
     sp="$(printf '%s' "$out" | awk '$1==200||$1==206{ if ($2>50000) print int($3); else print 0 }')"
@@ -449,7 +449,7 @@ cn_init() {
     ghc="https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-arm64.zip"
     gp="$(pick_gh_proxy)"
     if [ -n "$gp" ]; then
-      d="$(probe_speed "$ghc" 8)"; s="$(probe_speed "${gp}${ghc}" 8)"
+      d="$(probe_speed "$ghc" 4)"; s="$(probe_speed "${gp}${ghc}" 4)"
       d="${d:-0}"; s="${s:-0}"
       info "$(lc "speed test github: direct ${d}B/s, proxy ${s}B/s" "测速 GitHub：直连 ${d}B/s ，反代 ${s}B/s")"
       if [ "$s" -gt 0 ] && [ "$((s * 10))" -gt "$((d * 15))" ]; then GH_PROXY="$gp"; fi
@@ -581,8 +581,13 @@ ensure_node() {
     # 非 root 时优先 sudo（没装 sudo 就直连 apt-get，失败也只是报错）
     local sudo_cmd=""
     if ! is_root; then have sudo && sudo_cmd="sudo"; fi
-    curl -fsSL https://deb.nodesource.com/setup_22.x | $sudo_cmd bash - >/dev/null 2>&1 || true
-    $sudo_cmd apt-get install -y nodejs >/dev/null 2>&1 || true
+    # nodesource 国内基本连不上：给足超时，避免无限挂起；失败立刻走镜像独立安装
+    if curl -fsSL --connect-timeout 8 --max-time 25 https://deb.nodesource.com/setup_22.x \
+      | $sudo_cmd bash - >/dev/null 2>&1; then
+      $sudo_cmd apt-get install -y nodejs >/dev/null 2>&1 || true
+    else
+      warn "$(lc 'nodesource unreachable; falling back to standalone Node.js build' 'nodesource 不可达，改用独立 Node.js 安装（走镜像）')"
+    fi
   fi
   have node && return 0
   # 兜底：官方 tarball 独立安装。macOS 上没装 Homebrew 时这是唯一可行路径。
@@ -699,7 +704,8 @@ install_omp() {
   export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
   if have omp; then info "$(lc 'omp already installed, updating' 'omp 已安装，检查更新')"; omp update >/dev/null 2>&1 || true; return 0; fi
   if have curl; then
-    curl -fsSL --connect-timeout 10 --max-time 300 https://omp.sh/install | sh && { export PATH="$HOME/.local/bin:$PATH"; have omp && return 0; }
+    # omp.sh 的官方安装器本身没有可靠超时：只给它 40s，失败立即走 npm/bun 兜底
+    curl -fsSL --connect-timeout 8 --max-time 40 https://omp.sh/install | sh && { export PATH="$HOME/.local/bin:$PATH"; have omp && return 0; }
   fi
   if have bun; then
     bun install -g @oh-my-pi/pi-coding-agent && return 0
