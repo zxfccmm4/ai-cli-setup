@@ -6,6 +6,30 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [Semantic Versioning](https://semver.org/).
 
+## [v2.2.0] - 2026-10-26
+
+### ✨ Features
+
+- 新增国内网络加速：npm / Node.js / GitHub 三个下载源各自实测带宽后择优，而非无条件套镜像
+  - npm registry：`registry.npmjs.org` ↔ `registry.npmmirror.com`，镜像快 20% 以上才切换
+  - Node.js：`nodejs.org/dist` ↔ `npmmirror.com/mirrors/node`（两者目录布局不同，分别记录 dist 前缀）
+  - GitHub Release：直连 ↔ 反代，先校验响应体是真二进制再比带宽，反代快 50% 以上才切换
+  - 优先复用本地代理（Clash 等常见端口），命中则全局走代理
+- 新增 `cn` 子命令：打印测速结果与最终加速方案
+- 新增 `--cn` / `--no-cn` / `--proxy` 参数，以及 `AICLI_CN`、`AICLI_PROXY`、`AICLI_CN_BENCH`、
+  `AICLI_NPM_REGISTRY`、`AICLI_NODE_MIRROR`、`AICLI_GH_PROXY` 环境变量
+- OpenCode 安装器失败时改为直连 GitHub Release 兜底（支持 macOS zip 与 Linux tar.gz）
+- 重写 README：新增「国内网络加速」章节、完整参数表与实测数据
+
+### 🐛 Bug Fixes
+
+- 修复 `export NPM_CONFIG_REGISTRY="$(...)"` 触发 SC2155
+- 加速逻辑不写入用户 `~/.npmrc`，仅通过进程环境变量生效
+
+### 🔨 Chores
+
+- bump VERSION 到 2.2.0
+
 ## [v2.1.0] - 2026-10-12
 
 ### ✨ Features

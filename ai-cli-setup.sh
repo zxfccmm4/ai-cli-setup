@@ -20,7 +20,7 @@
 #
 set -Eeuo pipefail
 
-VERSION="2.1.1"
+VERSION="2.2.0"
 NAME="ai-cli-setup"
 
 # ============================================================
@@ -291,6 +291,193 @@ agent_unrunnable_here() {
 }
 
 # ============================================================
+# 6.5 中国大陆加速
+# ============================================================
+# 三个下载来源各自决定，全部按“实测下载速度”择优，而不是无条件走镜像：
+#   npm registry  -> registry.npmjs.org  或 registry.npmmirror.com（淘宝源）
+#   Node.js 官方包 -> nodejs.org         或 npmmirror.com/mirrors/node
+#   github.com    -> 直连 或 GitHub 反代（gh-proxy.com / ghproxy.net …）
+# 实测参考（国内网络）：npm 安装 @openai/codex 从 53.7s 降到 7.9s；
+# nodejs.org 在国内基本连不上（约 19 B/s），镜像约 20 MB/s；GitHub release 直连常被墙。
+# 关键教训：只判断“能不能连上”不可靠 —— ghproxy.cn 会返回 HTML 验证页，
+# 用 -r 0-0 探测会误判为成功。必须校验响应体是不是真的二进制，并比较速度，
+# 否则会把本来很快的直连换成慢镜像（实测日本出口直连 GitHub 3.4MB/s > 反代 0.2MB/s）。
+# 环境变量：
+#   AICLI_CN=auto|1|0     auto（默认）：国内网络启用加速
+#   AICLI_PROXY=...       给 curl 用的代理，如 http://127.0.0.1:7890
+#   AICLI_CN_BENCH=0      跳过测速，直接用国内镜像
+#   AICLI_GH_PROXY=URL    GitHub 反代前缀；"auto" 测速，"none" 强制直连
+#   AICLI_NPM_REGISTRY=URL
+#   AICLI_NODE_MIRROR=URL
+CN_MODE=0
+PROXY="${AICLI_PROXY:-}"
+NPM_REGISTRY="${AICLI_NPM_REGISTRY:-https://registry.npmmirror.com/}"
+NPM_REGISTRY_OFFICIAL="https://registry.npmjs.org/"
+NODE_MIRROR="${AICLI_NODE_MIRROR:-https://npmmirror.com/mirrors/node}"
+NODE_MIRROR_OFFICIAL="https://nodejs.org/dist"
+GH_PROXY=""
+# 存放 dist 的目录前缀：nodejs.org/dist/latest-v22.x/... 与
+# npmmirror.com/mirrors/node/latest-v22.x/... 布局不同，只能各记各的，不能拼接。
+NODE_DIST_OFFICIAL="https://nodejs.org/dist"
+NODE_DIST_MIRROR="${NODE_MIRROR%/}"
+NODE_DIST=""
+# 实测能返回真实二进制的 GitHub 反代（ghproxy.cn 会返回 HTML 验证页，已排除）
+GH_PROXY_CANDIDATES="https://gh-proxy.com/ https://ghproxy.net/ https://ghfast.top/"
+
+is_cn_network() {
+  local tz="" cc=""
+  tz="$(readlink /etc/localtime 2>/dev/null || true)"
+  case "$tz" in *Asia/Shanghai*|*Asia/Chongqing*|*Asia/Urumqi*|*Asia/Harbin*|*PRC*) return 0 ;; esac
+  if [ -n "${TZ:-}" ]; then
+    case "$TZ" in Asia/Shanghai|Asia/Chongqing|Asia/Urumqi|Asia/Harbin|PRC) return 0 ;; esac
+  fi
+  have curl || return 1
+  # 出口 IP 归属地：国内为 loc=CN，日本/新加坡等为 loc=JP/…
+  cc="$(curl -fsS --connect-timeout 2 --max-time 4 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null \
+        | awk -F= '$1=="loc"{print $2}' || true)"
+  case "$cc" in CN|HK|MO) return 0 ;; esac
+  return 1
+}
+
+# probe_speed <url> [rounds] -> 输出字节/秒
+# 单次采样波动很大（同一 URL 实测 0.15~10MB/s），所以取多轮最大值。
+# 用 1.5MB 的 Range 只估带宽，外加 --speed-limit 早停，不把文件下完。
+probe_speed() {
+  local url="$1" rounds="${2:-2}" i best=0 out sp
+  for i in $(seq 1 "$rounds"); do
+    out="$(curl -sSL --connect-timeout 4 --max-time 10 --range 0-1500000 \
+            --speed-limit 1 --speed-time 5 -o /dev/null \
+            -w '%{http_code} %{size_download} %{speed_download}' "$url" 2>/dev/null || true)"
+    sp="$(printf '%s' "$out" | awk '$1==200||$1==206{ if ($2>50000) print int($3); else print 0 }')"
+    sp="${sp:-0}"
+    [ "$sp" -gt "$best" ] && best="$sp"
+  done
+  printf '%s' "$best"
+}
+
+# pick_faster <official_url> <mirror_url> <label> <probe_file>
+# probe_file：用来测速的实际大文件（npm 元数据只有几十 KB，测不出带宽）。
+pick_faster() {
+  local off="$1" mir="$2" label="$3" file="$4" so sm
+  if [ "${AICLI_CN_BENCH:-1}" = "0" ]; then printf '%s' "$mir"; return 0; fi
+  so="$(probe_speed "${off%/}/${file}")"
+  sm="$(probe_speed "${mir%/}/${file}")"
+  info "$(lc "speed test $label: official ${so}B/s, mirror ${sm}B/s" "测速 $label 官方 ${so}B/s ，镜像 ${sm}B/s")"
+  if [ "$sm" -gt 0 ] && [ "$((sm * 10))" -gt "$((so * 12))" ]; then
+    printf '%s' "$mir"
+  else
+    printf '%s' "$off"
+  fi
+}
+
+# pick_gh_proxy -> 输出一个确实能返回二进制内容的反代前缀，没有则输出空
+pick_gh_proxy() {
+  local p out sig sz probe
+  probe="/tmp/.aicli-ghprobe.$$"
+  for p in $GH_PROXY_CANDIDATES; do
+    rm -f "$probe"
+    out="$(curl -sSL --connect-timeout 4 --max-time 12 --range 0-63 -o "$probe" \
+            -w '%{http_code}' "${p}https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-arm64.zip" 2>/dev/null || true)"
+    if [ -f "$probe" ]; then
+      sig="$(head -c 2 "$probe" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+      sz="$(wc -c < "$probe" 2>/dev/null | tr -d ' ')"
+      rm -f "$probe"
+    else
+      sig=""; sz=0
+    fi
+    case "$out" in 200|206) ;; *) continue ;; esac
+    [ "${sz:-0}" -ge 16 ] || continue
+    # 真二进制不会以 "<!" 开头（HTML 验证页）
+    [ "$sig" = "3c21" ] && continue
+    printf '%s' "$p"; return 0
+  done
+  printf ''
+}
+
+# 把 github.com / raw.githubusercontent.com 的 URL 套上选中的反代；其它原样返回
+gh_mirror_url() {
+  local url="$1"
+  case "$url" in *github.com/*|*raw.githubusercontent.com/*) ;; *) printf '%s' "$url"; return 0 ;; esac
+  if [ -n "$GH_PROXY" ]; then printf '%s%s' "${GH_PROXY%/}/" "$url"; else printf '%s' "$url"; fi
+}
+
+cn_init() {
+  case "$(printf '%s' "${AICLI_CN:-auto}" | tr 'A-Z' 'a-z')" in
+    1|true|yes|on)  CN_MODE=1 ;;
+    0|false|no|off) CN_MODE=0 ;;
+    *) if is_cn_network; then CN_MODE=1; fi ;;
+  esac
+
+  if [ "$CN_MODE" != "1" ]; then
+    info "$(lc 'acceleration off; official sources only' '未启用加速，只使用官方源')"
+    return 0
+  fi
+
+  # 1) 本地代理（Clash 等）：有就全局走代理，最省事
+  if [ -z "$PROXY" ]; then
+    local cand
+    for cand in http://127.0.0.1:7890 http://127.0.0.1:7897 http://127.0.0.1:10809 http://127.0.0.1:1080; do
+      if curl -fsS --connect-timeout 1 --max-time 2 --noproxy '' -x "$cand" -o /dev/null https://registry.npmjs.org/ 2>/dev/null; then
+        PROXY="$cand"; break
+      fi
+    done
+  fi
+  if [ -n "$PROXY" ]; then
+    export http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY"
+    info "$(lc "detected local proxy $PROXY (all downloads via proxy)" "检测到本地代理 $PROXY ，全部下载走代理")"
+    return 0
+  fi
+
+  # 2) npm：官方 vs 淘宝源
+  # tarball 是 npm 装包的真实流量来源，用它测更有代表性
+  NPM_CONFIG_REGISTRY="$(pick_faster "$NPM_REGISTRY_OFFICIAL" "$NPM_REGISTRY" "npm" "@openai/codex/-/codex-0.50.0.tgz")"
+  export NPM_CONFIG_REGISTRY
+
+  # 3) Node.js 包
+  local node_pick
+  node_pick="$(pick_faster "$NODE_MIRROR_OFFICIAL" "$NODE_MIRROR" "node" "latest-v22.x/node-v22.20.0-darwin-arm64.tar.gz")"
+  if [ "$node_pick" = "$NODE_MIRROR" ]; then NODE_DIST="$NODE_DIST_MIRROR"; else NODE_DIST="$NODE_DIST_OFFICIAL"; fi
+
+  # 4) GitHub：直连 vs 反代（用户显式指定时跳过测速）
+  case "${AICLI_GH_PROXY:-auto}" in
+    none|"") GH_PROXY="" ;;
+    auto)    auto_gh=1 ;;
+    *)       GH_PROXY="$AICLI_GH_PROXY"; auto_gh=0 ;;
+  esac
+  if [ "${auto_gh:-1}" = "1" ] && [ "${AICLI_CN_BENCH:-1}" != "0" ]; then
+    local gp ghc d s
+    ghc="https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-arm64.zip"
+    gp="$(pick_gh_proxy)"
+    if [ -n "$gp" ]; then
+      d="$(probe_speed "$ghc" 8)"; s="$(probe_speed "${gp}${ghc}" 8)"
+      d="${d:-0}"; s="${s:-0}"
+      info "$(lc "speed test github: direct ${d}B/s, proxy ${s}B/s" "测速 GitHub：直连 ${d}B/s ，反代 ${s}B/s")"
+      if [ "$s" -gt 0 ] && [ "$((s * 10))" -gt "$((d * 15))" ]; then GH_PROXY="$gp"; fi
+    fi
+  fi
+
+  info "$(lc "plan: npm=$NPM_CONFIG_REGISTRY node=$NODE_DIST github=${GH_PROXY:-direct}" "加速方案：npm = $NPM_CONFIG_REGISTRY ，Node = $NODE_DIST ，GitHub = ${GH_PROXY:-直连}")"
+}
+
+# cn_selftest_out：`ai-cli-setup cn` 的输出，用来确认加速方案
+cn_selftest_out() {
+  printf 'CN_MODE=%s\nPROXY=%s\nNPM_REGISTRY=%s\nNODE_MIRROR=%s\nGH_PROXY=%s\n' \
+    "$CN_MODE" "${PROXY:-none}" "${NPM_CONFIG_REGISTRY:-official}" \
+    "${NODE_DIST:-$NODE_DIST_MIRROR}" "${GH_PROXY:-direct}"
+}
+
+# GitHub release 直链原始 URL（未套反代）
+opencode_release_url() {
+  local arch="x64"
+  case "$(uname -m)" in aarch64|arm64) arch="arm64" ;; esac
+  case "$OS" in
+    macos) if [ "$ARCH" = "arm64" ]; then printf '%s' "https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-arm64.zip";
+           else printf '%s' "https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-x64.zip"; fi ;;
+    *) printf '%s' "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}-musl.tar.gz" ;;
+  esac
+}
+
+# ============================================================
 # 7. 安装（全自研：官方 installer / npm，不依赖 zxfccmm4 仓库）
 # ============================================================
 # 依赖缺失一律“返回失败”而不是 die：单个 agent 失败不应中断其它 agent
@@ -305,7 +492,8 @@ need_dl() {
 run_official() {  # run_official <url> [args...]
   local url="$1"; shift
   need_dl || return 1
-  if have curl; then curl -fsSL "$url" | bash -s -- "$@"; else wget -qO- "$url" | bash -s -- "$@"; fi
+  url="$(gh_mirror_url "$url")"
+  if have curl; then curl -fsSL --connect-timeout 10 --max-time 300 "$url" | bash -s -- "$@"; else wget -qO- --timeout=300 "$url" | bash -s -- "$@"; fi
 }
 
 # --- Node.js 获取 ---------------------------------------------------------
@@ -348,7 +536,7 @@ install_node_standalone() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/aicli-node.XXXXXX")" || return 1
   info "$(lc "installing standalone Node.js (no root, no Homebrew) into $base" "正在安装独立 Node.js（免 root / Homebrew）到 $base")"
   curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp/SHASUMS256.txt" \
-    "https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt" || { rm -rf "$tmp"; return 1; }
+    "${NODE_DIST:-$NODE_DIST_OFFICIAL}/latest-v22.x/SHASUMS256.txt" || { rm -rf "$tmp"; return 1; }
   # 只挑本平台的 .tar.gz：.tar.xz 在精简系统上可能缺 xz
   file="$(awk -v suffix="-$platform-$arch.tar.gz" \
     'index($2, "node-v") == 1 && substr($2, length($2) - length(suffix) + 1) == suffix { print $2; exit }' \
@@ -359,7 +547,7 @@ install_node_standalone() {
     return 1
   fi
   curl -fsSL --connect-timeout 10 --max-time 600 -o "$tmp/$file" \
-    "https://nodejs.org/dist/latest-v22.x/$file" || { rm -rf "$tmp"; return 1; }
+    "${NODE_DIST:-$NODE_DIST_OFFICIAL}/latest-v22.x/$file" || { rm -rf "$tmp"; return 1; }
   if [ "$verifier" = "sha256sum" ]; then
     (cd "$tmp" && awk -v f="$file" '$2 == f' SHASUMS256.txt | sha256sum -c -) >&2 || { rm -rf "$tmp"; err "$(lc 'Node.js checksum mismatch' 'Node.js 校验和不匹配')"; return 1; }
   else
@@ -420,6 +608,18 @@ ensure_npm() {
   return 1
 }
 
+# npm 安装包装：国内网络走镜像 registry；失败再做一次官方源重试（镜像缺包时兜底）。
+npm_g() {
+  local pkg="$*"
+  if [ -n "${NPM_CONFIG_REGISTRY:-}" ]; then
+    npm install -g --ignore-scripts $pkg --registry="$NPM_CONFIG_REGISTRY" && return 0
+    warn "$(lc "mirror install of $pkg failed; retrying official registry" "镜像安装 $pkg 失败，改用官方源重试")"
+    npm install -g --ignore-scripts $pkg --registry=https://registry.npmjs.org/ && return 0
+    return 1
+  fi
+  npm install -g --ignore-scripts $pkg
+}
+
 install_pi() {
   if have pi; then info "$(lc 'pi already installed, updating' 'pi 已安装，检查更新')"; pi update >/dev/null 2>&1 || true; return 0; fi
   # npm 优先：完全非交互，且不会接管终端。
@@ -465,26 +665,26 @@ run_official_isolated() {
     err "$(lc 'cannot run the official installer without hijacking the terminal (needs setsid, perl, or python3); install Node.js + npm first' '无法在不劫持终端的前提下运行官方 installer（需要 setsid、perl 或 python3）；请先装好 Node.js + npm')"
     return 1
   fi
-  if have curl; then curl -fsSL "$url" | detach_run "$m" bash
-  else wget -qO- "$url" | detach_run "$m" bash
+  if have curl; then curl -fsSL --connect-timeout 10 --max-time 300 "$(gh_mirror_url "$url")" | detach_run "$m" bash
+  else wget -qO- --timeout=300 "$(gh_mirror_url "$url")" | detach_run "$m" bash
   fi
 }
 install_omo() {
   export OMO_INSTALL_ALLOW_SUDO=1   # 服务器常以 root 运行
   if have omo; then info "$(lc 'omo already installed, updating' 'omo 已安装，检查更新')"; omo update >/dev/null 2>&1 || true; return 0; fi
-  if have curl; then curl -fsSL https://get.omo.dev/install.sh | bash
-  elif have wget; then wget -qO- https://get.omo.dev/install.sh | bash
-  else ensure_npm && npm install -g omo-ai; fi
+  if have curl; then curl -fsSL --connect-timeout 10 --max-time 300 "$(gh_mirror_url https://get.omo.dev/install.sh)" | bash
+  elif have wget; then wget -qO- --timeout=300 "$(gh_mirror_url https://get.omo.dev/install.sh)" | bash
+  else ensure_npm && npm_g omo-ai; fi
 }
 install_claude() {
   if have claude; then info "$(lc 'claude already installed' 'claude 已安装')"; return 0; fi
-  if have curl; then curl -fsSL https://claude.ai/install.sh | bash
-  elif have wget; then wget -qO- https://claude.ai/install.sh | bash
-  else ensure_npm && npm install -g @anthropic-ai/claude-code; fi
+  if have curl; then curl -fsSL --connect-timeout 10 --max-time 300 "$(gh_mirror_url https://claude.ai/install.sh)" | bash
+  elif have wget; then wget -qO- --timeout=300 "$(gh_mirror_url https://claude.ai/install.sh)" | bash
+  else ensure_npm && npm_g @anthropic-ai/claude-code; fi
 }
 install_codex() {
   if have codex; then info "$(lc 'codex already installed' 'codex 已安装')"; return 0; fi
-  ensure_npm && npm install -g @openai/codex
+  ensure_npm && npm_g @openai/codex
 }
 install_grok() {
   export PATH="$HOME/.grok/bin:$PATH"
@@ -499,13 +699,13 @@ install_omp() {
   export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
   if have omp; then info "$(lc 'omp already installed, updating' 'omp 已安装，检查更新')"; omp update >/dev/null 2>&1 || true; return 0; fi
   if have curl; then
-    curl -fsSL https://omp.sh/install | sh && { export PATH="$HOME/.local/bin:$PATH"; have omp && return 0; }
+    curl -fsSL --connect-timeout 10 --max-time 300 https://omp.sh/install | sh && { export PATH="$HOME/.local/bin:$PATH"; have omp && return 0; }
   fi
   if have bun; then
     bun install -g @oh-my-pi/pi-coding-agent && return 0
   fi
   if ensure_npm; then
-    npm install -g @oh-my-pi/pi-coding-agent && return 0
+    npm_g @oh-my-pi/pi-coding-agent && return 0
   fi
   err "$(lc 'omp install failed (need curl+sh, bun, or npm)' 'omp 安装失败（需要 curl+sh、bun 或 npm）')"
   return 1
@@ -529,7 +729,7 @@ install_opencode_musl() {
   case "$(uname -m)" in
     aarch64|arm64) arch="arm64" ;;
   esac
-  local url="https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}-musl.tar.gz"
+  local url; url="$(gh_mirror_url "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}-musl.tar.gz")"
   local bindir="$HOME/.opencode/bin" tmpd
   mkdir -p "$bindir"
   tmpd="$(mktemp -d "${TMPDIR:-/tmp}/aicli-oc.XXXXXX")" || return 1
@@ -571,7 +771,43 @@ install_opencode() {
     fi
     return 0   # 安装器已报成功，PATH 交给 post_install_check 提示
   fi
-  ensure_npm && npm install -g opencode-ai
+  # 官方安装器失败（国内常见：卡在 GitHub 下载）→ 直接抓 release（套反代）
+  if install_opencode_release; then return 0; fi
+  ensure_npm && npm_g opencode-ai
+}
+
+# install_opencode_release：绕过 opencode.ai/install，直连 GitHub release 下载二进制。
+# 国内走 gh_proxy_prefix 反代；先试反代，失败再试原始 URL。
+install_opencode_release() {
+  local arch="x64" url out tmpd bindir ext
+  case "$(uname -m)" in aarch64|arm64) arch="arm64" ;; esac
+  bindir="$HOME/.opencode/bin"; mkdir -p "$bindir"
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/aicli-ocr.XXXXXX")" || return 1
+  case "$OS" in
+    macos) [ "$ARCH" = "arm64" ] && out="opencode-darwin-arm64" || out="opencode-darwin-x64"; ext="zip" ;;
+    *) out="opencode-linux-${arch}"; ext="tar.gz" ;;
+  esac
+  url="$(gh_mirror_url "https://github.com/anomalyco/opencode/releases/latest/download/${out}.${ext}")"
+  info "$(lc "downloading opencode release ($OS/$arch)" "直接下载 opencode release：$OS/$arch")"
+  if have curl; then
+    curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmpd/pkg" "$url" || { rm -rf "$tmpd"; return 1; }
+  else
+    wget -q --timeout=300 -O "$tmpd/pkg" "$url" || { rm -rf "$tmpd"; return 1; }
+  fi
+  if [ "$ext" = "zip" ]; then
+    ( cd "$tmpd" && unzip -oq pkg -d unpacked ) || { rm -rf "$tmpd"; return 1; }
+    # zip 内可能带子目录，找可执行文件
+    local f; f="$(find "$tmpd/unpacked" -type f -name 'opencode*' 2>/dev/null | head -1)"
+    [ -n "$f" ] || { rm -rf "$tmpd"; return 1; }
+    cp "$f" "$bindir/opencode"
+  else
+    tar -xzf "$tmpd/pkg" -C "$bindir" || { rm -rf "$tmpd"; return 1; }
+  fi
+  rm -rf "$tmpd"
+  chmod +x "$bindir/opencode" 2>/dev/null || true
+  "$bindir/opencode" --version >/dev/null 2>&1 || { err "$(lc 'opencode release binary does not run on this system' 'opencode release 二进制在本系统无法运行')"; return 1; }
+  ok "opencode -> $bindir/opencode"
+  return 0
 }
 
 # persist_path <dir>：让“以后新开的 shell”都能找到 dir 里的命令。
@@ -1628,6 +1864,9 @@ ${BOLD}$(lc 'AGENTS' 'agent')${RESET}
 
 ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
   -y, --yes              $(lc 'non-interactive' '非交互模式')
+      --cn               $(lc 'force CN acceleration (npm/node mirrors + GitHub proxy)' '强制开启国内加速（npm / Node 镜像 + GitHub 反代）')
+      --no-cn            $(lc 'disable acceleration; use official sources' '关闭加速，全程使用官方源')
+      --proxy URL        $(lc 'HTTP proxy for curl, e.g. http://127.0.0.1:7890' '给 curl 用的代理，如 http://127.0.0.1:7890')
       --base-url URL     $(lc 'API endpoint base URL' '接口 base URL')
       --api-key KEY      $(lc 'API key (masked input: first3+***+last3)' 'API key（掩码输入：前3+***+后3）')
       --models a,b,c     $(lc 'model ids to register (pi/omo/omp/opencode)' '注册的模型 id（pi/omo/omp/opencode）')
@@ -1644,6 +1883,14 @@ ${BOLD}$(lc 'ENVIRONMENT' '环境变量')${RESET}
   AICLI_BASE_URL AICLI_API_KEY AICLI_MODELS AICLI_MODEL AICLI_LANG
   AICLI_ASSUME_TTY GROK_ALIAS GROK_CONTEXT_WINDOW CODEX_WIRE_API
   AICLI_OPENCODE_V2   (1 = force opencode v2 config format)
+
+${BOLD}$(lc 'CN ACCELERATION' '国内加速')${RESET}
+  AICLI_CN            auto|1|0 $(lc '(default auto: enable on CN network)' '（默认 auto：国内网络自动启用）')
+  AICLI_PROXY         $(lc 'e.g. http://127.0.0.1:7890' '例如 http://127.0.0.1:7890')
+  AICLI_NPM_REGISTRY  $(lc 'default https://registry.npmmirror.com/' '默认 https://registry.npmmirror.com/')
+  AICLI_NODE_MIRROR   $(lc 'default https://npmmirror.com/mirrors/node' '默认 https://npmmirror.com/mirrors/node')
+  AICLI_GH_PROXY      $(lc 'default auto (benchmarked); set a prefix to force, "none" to disable' '默认 auto（自动测速）；可指定反代前缀，或 none 关闭')
+  $NAME cn           $(lc 'show the detected acceleration plan' '查看加速检测结果')
 
 ${BOLD}$(lc 'CONFIG FILES' '配置文件')${RESET}
   pi       ~/.pi/agent/{models,settings}.json
@@ -1673,6 +1920,10 @@ parse_args() {
       --fail-fast) FAIL_FAST=1; shift ;;
       --assume-tty) ASSUME_TTY=1; shift ;;
       -l|--lang) LANG_CODE="$(normalize_lang "${2:-en}")"; LANG_EXPLICIT=1; shift 2 ;;
+      --cn) AICLI_CN=1; shift ;;
+      --no-cn) AICLI_CN=0; shift ;;
+      --proxy) PROXY="$2"; export AICLI_PROXY="$2"; shift 2 ;;
+      cn) COMMAND="$1"; shift ;;
       --base-url) BASE_URL="$2"; shift 2 ;;
       --api-key) API_KEY="$2"; shift 2 ;;
       --models) MODELS="$2"; shift 2 ;;
@@ -1705,6 +1956,7 @@ main() {
     help) usage; exit 0 ;;
     list) cmd_list; exit 0 ;;
     doctor) cmd_doctor; exit 0 ;;
+    cn) cn_init; cn_selftest_out; exit 0 ;;
   esac
 
   printf '\n%s\n' "${BOLD}$NAME $VERSION${RESET} — $(lc 'AI agent installer + configurator' 'AI agent 安装 + 配置')${RESET}" >&2
@@ -1721,6 +1973,7 @@ main() {
   hash -r 2>/dev/null || true
 
   if interactive_run; then prompt_language; fi
+  cn_init   # 国内加速：探测网络 / 代理，设置 npm 镜像与 Node、GitHub 反代
 
   # 选 agent
   if [ -z "$SELECTED" ]; then

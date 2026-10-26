@@ -4,7 +4,7 @@
 
 **一个脚本，装好并统一配置你所有的 AI CLI Agent**
 
-选 Agent ➔ 官方渠道自动安装 ➔ 统一配置 · 凭据只问一次
+选 Agent ➔ 官方渠道自动安装 ➔ 统一配置 · 凭据只问一次 · 国内网络自动加速
 
 [![CI](https://img.shields.io/github/actions/workflow/status/zxfccmm4/ai-cli-setup/ci.yml?branch=main&label=CI&logo=github&style=flat-square)](https://github.com/zxfccmm4/ai-cli-setup/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zxfccmm4/ai-cli-setup?label=Release&color=blue&style=flat-square)](https://github.com/zxfccmm4/ai-cli-setup/releases)
@@ -29,6 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 ## ✨ 核心特性
 
 - 🎯 **一键统管 7 大主流 Agent**：支持 Pi、OmO、OMP、Claude Code、Codex、Grok Build、OpenCode，按需多选或全选安装。
+- 🌏 **国内网络自动加速**：自动识别中国大陆网络，npm / Node.js / GitHub 三个下载源**各自实测速度后择优**，不盲目套镜像。详见 [国内网络加速](#-国内网络加速)。
 - 🔑 **凭据只问一次**：Base URL 与 API Key 统一采集，一键批量分发写入各 Agent 的原生配置格式（JSON / TOML / YAML）。
 - 📡 **智能拉取模型**：配置时自动请求网关端点拉取模型列表，一键全选或交互式挑选。
 - 🔒 **银行级安全防护**：
@@ -98,6 +99,76 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 
 ---
 
+## 🌏 国内网络加速
+
+> 自 v2.2.0 起内置。国内直连 `nodejs.org`、`registry.npmjs.org`、GitHub Release 经常超时，
+> 这套机制会自动绕开，**且不会把你本来很快的网络弄慢**。
+
+### 它怎么工作
+
+脚本先判断你是不是国内网络，然后对三个下载源**逐一实测下载速度**再决定走哪条路：
+
+| 下载源 | 可选路径 | 判断方式 |
+| :--- | :--- | :--- |
+| npm registry | `registry.npmjs.org` ↔ `registry.npmmirror.com` | 各拉 1.5MB tarball 比带宽，镜像快 20% 才切换 |
+| Node.js 官方包 | `nodejs.org/dist` ↔ `npmmirror.com/mirrors/node` | 同上（官方源国内常约 19 B/s，镜像可达数 MB/s） |
+| GitHub Release | 直连 ↔ GitHub 反代 | 先验证响应是真二进制，再比带宽，反代快 50% 才切换 |
+
+若检测到本地代理（Clash 等常见端口），直接全局走代理，优先级最高。
+
+> **为什么不无脑用镜像？**
+> 国内镜像在境外出口上反而更慢（实测日本出口直连 GitHub 3.4 MB/s，反代仅 0.2 MB/s）。
+> 无条件套镜像会让非大陆用户变慢，所以这里一律测速择优。
+
+### 一条命令查看当前方案
+
+```bash
+./ai-cli-setup.sh cn
+```
+
+```text
+ℹ  speed test npm: official 1377645B/s, mirror 5363563B/s
+ℹ  speed test node: official 0B/s, mirror 4804354B/s
+ℹ  speed test github: direct 1077687B/s, proxy 273372B/s
+ℹ  plan: npm=https://registry.npmmirror.com/ node=https://npmmirror.com/mirrors/node github=direct
+
+CN_MODE=1
+PROXY=none
+NPM_REGISTRY=https://registry.npmmirror.com/
+NODE_MIRROR=https://npmmirror.com/mirrors/node
+GH_PROXY=direct
+```
+
+### 开关与覆盖
+
+```bash
+# 强制开启（即使判断为非国内网络）
+./ai-cli-setup.sh --cn all -y --base-url ... --api-key ...
+
+# 强制关闭，全程官方源
+./ai-cli-setup.sh --no-cn all -y --base-url ... --api-key ...
+
+# 指定代理
+./ai-cli-setup.sh --proxy http://127.0.0.1:7890 all
+```
+
+| 环境变量 | 作用 | 默认值 |
+| :--- | :--- | :--- |
+| `AICLI_CN` | 加速总开关 | `auto`（国内网络自动开启）/ `1` / `0` |
+| `AICLI_PROXY` | 给 curl 用的代理 | 空（自动探测本地常见端口） |
+| `AICLI_CN_BENCH` | 设为 `0` 跳过测速，直接用国内镜像 | `1` |
+| `AICLI_NPM_REGISTRY` | 镜像地址 | `https://registry.npmmirror.com/` |
+| `AICLI_NODE_MIRROR` | Node.js 镜像地址 | `https://npmmirror.com/mirrors/node` |
+| `AICLI_GH_PROXY` | GitHub 反代前缀 | `auto`（自动测速）/ 自填前缀 / `none` 强制直连 |
+
+**不会改动你的 `~/.npmrc`**：加速只通过本次进程的环境变量生效，脚本退出即失效。
+
+### 实测收益
+
+空缓存安装 `@openai/codex`：**53.7s → 7.9s（约 6.8 倍）**；Node.js 独立安装从"几乎不可用"变为可正常完成（含 sha256 校验）。
+
+---
+
 ## 📦 支持的 Agent 矩阵
 
 | Agent | 官方安装渠道 | 配置文件位置 | 配置格式 | 特别说明 |
@@ -108,7 +179,7 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 | **Claude Code** | `claude.ai/install.sh`（回退 npm） | `~/.claude/settings.json` | `JSON` | 安装仅支持 Linux/WSL；macOS 仅写配置 |
 | **Codex CLI** | npm `@openai/codex` | `~/.codex/{config.toml,auth.json}` | `TOML` / `JSON` | 自动写入模型映射与 Base URL |
 | **Grok Build** | `x.ai/cli/install.sh` | `~/.grok/config.toml` | `TOML` | 自动配置模型别名与上下文窗口 |
-| **OpenCode** | `opencode.ai/install`（回退 npm） | `~/.config/opencode/opencode.json` | `JSON` | 自动识别 V1 / V2 规范并无损合并 |
+| **OpenCode** | `opencode.ai/install`（回退 GitHub Release → npm） | `~/.config/opencode/opencode.json` | `JSON` | 自动识别 V1 / V2 规范并无损合并；安装器失败时直连 Release 兜底 |
 
 ---
 
@@ -118,6 +189,7 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 | :--- | :---: | :--- |
 | **Linux (glibc)** | ✅ **全部支持** | Ubuntu, Debian, CentOS, Fedora, Arch 等全特性支持 |
 | **macOS** | ✅ **全部支持** | 原生兼容；Claude Code 跳过安装阶段仅写配置（上游官方限制） |
+| **中国大陆网络** | 🌏 **自动加速** | 见 [国内网络加速](#-国内网络加速)，无需手动配镜像 |
 | **OpenWrt / musl 软路由** | ⚡ **深度优化** | 自动识别 musl 架构并安装官方 musl 构建；Pi/OmO/OMP/Codex 依赖 Node，会优雅跳过安装但仍写配置（建议在容器运行） |
 
 ---
@@ -159,11 +231,49 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 
 # 运行全面的本地环境体检（探测依赖命令、路径、配置文件完整性）
 ./ai-cli-setup.sh doctor
+
+# 查看当前网络下的加速方案（测速 + 最终选择）
+./ai-cli-setup.sh cn
 ```
+
+### 4. 完整参数表
+
+| 参数 | 说明 |
+| :--- | :--- |
+| `-y, --yes` | 非交互模式 |
+| `--cn` / `--no-cn` | 强制开启 / 关闭国内加速 |
+| `--proxy URL` | 给 curl 用的 HTTP 代理 |
+| `--base-url URL` | 网关 API Base URL |
+| `--api-key KEY` | 网关 API 密钥（交互时掩码输入） |
+| `--models a,b,c` | 注册的模型 id 列表 |
+| `--model ID` | 默认模型 id |
+| `--skip-install` | 只写配置，不安装 |
+| `--dry-run` | 只打印计划，零落盘 |
+| `--fail-fast` | 首个失败即停 |
+| `--assume-tty` | 把 stdin 当交互输入（容器 / CI） |
+| `-l, --lang en\|zh` | 界面语言 |
+| `-h, --help` / `-V, --version` | 帮助 / 版本 |
 
 ---
 
 ## ❓ 常见问题 (FAQ)
+
+<details>
+<summary><b>国内网络下脚本卡在下载 / 超时怎么办？</b></summary>
+<br />
+
+先跑 `./ai-cli-setup.sh cn` 看加速是否生效。如果判断为「未启用加速」（例如本机出口在境外），
+可加 `--cn` 强制开启。若你本地有 Clash 等代理，直接 `--proxy http://127.0.0.1:7890` 最省事。
+</details>
+
+<details>
+<summary><b>为什么我这边镜像没有生效，还是走的官方源？</b></summary>
+<br />
+
+这是**测速择优**的正常结果：只有当镜像比官方源快 20% 以上才会切换。
+如果你的网络直连海外本来就很快（例如境外 VPS），走官方源就是最优解，脚本不会无谓地把你换到镜像。
+想看具体数字请运行 `./ai-cli-setup.sh cn`，它会打印两边的实测带宽。
+</details>
 
 <details>
 <summary><b>输入 API Key 时界面好像卡住了？</b></summary>
@@ -213,12 +323,19 @@ musl 系统若误安装了 glibc 预编译二进制，在动态链接器缺失�
 | `AICLI_LANG` | 界面语言 | `zh` 或 `en` |
 | `AICLI_ASSUME_TTY` | 将标准输入视作 TTY 终端（容器 / CI 环境使用） | `0` / `1` |
 | `AICLI_OPENCODE_V2` | 强制采用 OpenCode V2 格式（使用 `{env:}` 凭据引用） | 自动探测 / `1` |
+| `AICLI_CN` | 国内加速总开关（见 [国内网络加速](#-国内网络加速)） | `auto` / `1` / `0` |
+| `AICLI_PROXY` | 给 curl 用的代理 | 空（自动探测） |
+| `AICLI_CN_BENCH` | 跳过测速，强制走国内镜像 | `1`（测速）/ `0` |
+| `AICLI_NPM_REGISTRY` | npm 镜像地址 | `https://registry.npmmirror.com/` |
+| `AICLI_NODE_MIRROR` | Node.js 镜像地址 | `https://npmmirror.com/mirrors/node` |
+| `AICLI_GH_PROXY` | GitHub 反代前缀 | `auto` / 自填 / `none` |
 | `GROK_ALIAS` | Grok CLI 默认模型别名 | `main` |
 | `GROK_CONTEXT_WINDOW`| Grok CLI 上下文窗口尺寸 | `500000` |
 | `CODEX_WIRE_API` | Codex CLI 协议类型 | `responses` / `chat` |
 
 > `node` 缺失时脚本会自动获取：macOS 先试 Homebrew，Linux 先试 nodesource+apt；
 > 都不可用则免 root 装官方 tarball 到 `~/.local/share/pi-node/current`（sha256 校验）。
+> 该 tarball 同样走上面的加速逻辑。
 
 ---
 
@@ -228,6 +345,7 @@ musl 系统若误安装了 glibc 预编译二进制，在动态链接器缺失�
 - ⚙️ [配置与参数详解 (Configuration)](docs/configuration.md)
 - 🛠 [疑难问题与排错 (Troubleshooting)](docs/troubleshooting.md)
 - 💻 [本地开发与发版规范 (Development)](docs/development.md)
+- 📝 [更新日志 (Changelog)](CHANGELOG.md)
 
 ---
 
