@@ -417,6 +417,115 @@ jobs:
           [ -z "$(find "$HOME" -type f | head -1)" ] || { echo "::error::dry-run created files"; find "$HOME" -type f; exit 1; }
           echo "dry-run clean"
 
+      - name: Options that take a value fail cleanly without one
+        run: |
+          # 回归：--model/--base-url/… 后面没跟值时曾直接报 "$2: unbound variable"，
+          # --lang 甚至被 set -e 静默杀掉（exit 1、零提示）。现在必须是可读错误。
+          for opt in --model --base-url --api-key --models --proxy --lang -l --grok-alias; do
+            set +e; out="$(./ai-cli-setup.sh pi "$opt" 2>&1)"; rc=$?; set -e
+            [ "$rc" -ne 0 ] || { echo "::error::$opt without a value should fail"; exit 1; }
+            printf '%s' "$out" | grep -q 'unbound variable' && { echo "::error::$opt leaked a bash error: $out"; exit 1; }
+            printf '%s' "$out" | grep -Eq 'requires a value|需要一个值' || { echo "::error::$opt gave no usable message: $out"; exit 1; }
+          done
+          echo "option-value guard OK"
+
+      - name: Non-interactive run without credentials fails before any install
+        run: |
+          # 回归：-y 缺凭据曾先把整个安装阶段跑完（可能是几分钟下载），再在配置阶段 die。
+          set +e; out="$(AICLI_CN=0 ./ai-cli-setup.sh all -y --skip-install 2>&1)"; rc=$?; set -e
+          [ "$rc" -ne 0 ] || { echo "::error::should fail"; exit 1; }
+          printf '%s' "$out" | grep -q '==> ' && { echo "::error::install phase ran before the credential check"; exit 1; }
+          printf '%s' "$out" | grep -Eq 'missing --base-url|缺少 --base-url' || { echo "::error::wrong message: $out"; exit 1; }
+          echo "early credential check OK"
+
+      - name: Shell rc file follows $SHELL and the exported key round-trips
+        run: |
+          # 回归 1：全新 zsh 账号（无任何 rc 文件）曾把 OpenCode V2 密钥和 PATH 写进 .bashrc。
+          # 回归 2：重跑时 node 分支把包裹引号也转义了，export 行求值为空串 → opencode 401。
+          #         这里真的 source 一遍并逐字比对，密钥故意带上 ' $& \1 等特殊字符。
+          export HOME="$RUNNER_TEMP/fakehome-zsh" XDG_CONFIG_HOME="$RUNNER_TEMP/fakehome-zsh/.config"
+          mkdir -p "$HOME"
+          KEY="sk-it's \$& \\1 \"q\" end"
+          for k in sk-first "$KEY"; do
+            SHELL=/bin/zsh AICLI_CN=0 AICLI_OPENCODE_V2=1 ./ai-cli-setup.sh opencode -y --skip-install \
+              --base-url https://gw.example.com/v1 --api-key "$k" --models m1 >/dev/null
+          done
+          [ ! -e "$HOME/.bashrc" ] || { echo "::error::.bashrc was created for a zsh user"; exit 1; }
+          perm="$(stat -c '%a' "$HOME/.zshrc" 2>/dev/null || stat -f '%Lp' "$HOME/.zshrc")"
+          [ "$perm" = "600" ] || { echo "::error::freshly created .zshrc has mode $perm, want 600"; exit 1; }
+          [ "$(grep -c '^export AICLI_GW_EXAMPLE_COM_API_KEY=' "$HOME/.zshrc")" = 1 ] || { echo "::error::export line duplicated"; cat "$HOME/.zshrc"; exit 1; }
+          got="$(bash -c "source '$HOME/.zshrc'; printf '%s' \"\$AICLI_GW_EXAMPLE_COM_API_KEY\"")"
+          [ "$got" = "$KEY" ] || { echo "::error::exported key mangled: [$got]"; cat "$HOME/.zshrc"; exit 1; }
+          echo "shell rc + key export OK"
+
+      - name: Speed-test probes must live in immutable directories
+        run: |
+          # 回归：node 探针曾写死 latest-v22.x/node-v22.20.0-…，官方源一发新版旧文件就 404，
+          # 官方侧测速恒为 0 → 盲选镜像，境外用户变慢。带版本号的目录（v22.20.0/）永久不变。
+          if grep -q 'latest-v22\.x/node-v' ai-cli-setup.sh; then
+            echo "::error::node speed probe points at a moving latest-v22.x path"; exit 1
+          fi
+          grep -q 'NODE_PROBE_FILE="v[0-9.]*/node-v' ai-cli-setup.sh || { echo "::error::NODE_PROBE_FILE missing or not version-pinned"; exit 1; }
+          echo "probe path OK"
+
+      - name: --skip-install / --dry-run skip the CN speed benchmark
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome-cn" XDG_CONFIG_HOME="$RUNNER_TEMP/fakehome-cn/.config"; mkdir -p "$HOME"
+          for mode in --skip-install --dry-run; do
+            out="$(AICLI_CN=1 AICLI_GH_PROXY=none ./ai-cli-setup.sh grok -y "$mode" \
+                     --base-url https://gw.example.com/v1 --api-key k --model m 2>&1)"
+            printf '%s' "$out" | grep -Eq 'speed test|测速' && { echo "::error::benchmark ran during $mode"; exit 1; }
+            printf '%s' "$out" | grep -Eq 'plan:|加速方案' || { echo "::error::plan line missing for $mode: $out"; exit 1; }
+          done
+          echo "bench skip OK"
+
+      - name: Proxied GitHub downloads are verified against the GitHub API digest
+        run: |
+          # 反代是第三方，可能篡改二进制。两个角色都用同一个本地假服务（反代 + GitHub API），
+          # 全程离线：1) 摘要不符 → 丢弃并报错；2) 摘要一致 → 通过；3) API 不可达 → 只告警不阻断。
+          # shim PATH 里没有 node/npm/bun/opencode，curl 只允许访问 127.0.0.1（其余立即失败）。
+          T="$RUNNER_TEMP/digest"; mkdir -p "$T"
+          cat > "$T/srv.py" <<'PY'
+          import http.server, hashlib, json, sys
+          MODE = sys.argv[1]
+          PAYLOAD = b"definitely-not-an-opencode-binary\n" * 64
+          NAMES = ["opencode-darwin-arm64.zip","opencode-darwin-x64.zip","opencode-linux-x64.tar.gz",
+                   "opencode-linux-arm64.tar.gz","opencode-linux-x64-musl.tar.gz","opencode-linux-arm64-musl.tar.gz"]
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path.startswith("/repos/"):
+                      d = hashlib.sha256(PAYLOAD).hexdigest() if MODE == "good" else "0"*64
+                      body = json.dumps({"assets":[{"name":n,"digest":"sha256:"+d} for n in NAMES]}).encode()
+                      ct = "application/json"
+                  else:
+                      body, ct = PAYLOAD, "application/octet-stream"
+                  self.send_response(200); self.send_header("Content-Type", ct)
+                  self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+              def log_message(self, *a): pass
+          http.server.HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+          PY
+          SHIM="$T/shim/bin"; mkdir -p "$SHIM"
+          for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty dirname basename head tail cat wc ln rm sleep python3 seq awk tar unzip readlink od find sha256sum shasum openssl jq; do
+            p="$(type -P "$c" 2>/dev/null)" || continue; case "$p" in /*) ln -sf "$p" "$SHIM/$c" ;; esac
+          done
+          REAL_CURL="$(type -P curl)"
+          printf '#!/bin/sh\nfor a in "$@"; do case "$a" in *127.0.0.1*) exec %s "$@" ;; esac; done\nexit 22\n' "$REAL_CURL" > "$SHIM/curl"
+          chmod +x "$SHIM/curl"
+          run_case() {  # run_case <mode> <api-url> <expect-regex> <label>
+            python3 "$T/srv.py" "$1" 8742 & srv=$!; sleep 1
+            export HOME="$T/home-$1-$RANDOM" XDG_CONFIG_HOME="$HOME/.config"; mkdir -p "$HOME"
+            set +e
+            PATH="$SHIM" AICLI_CN=1 AICLI_CN_BENCH=0 AICLI_GH_PROXY="http://127.0.0.1:8742/" AICLI_GH_API="$2" \
+              "$SHIM/bash" ./ai-cli-setup.sh opencode -y -l en --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > "$T/$1.out" 2>&1
+            set -e
+            kill "$srv" 2>/dev/null || true; wait "$srv" 2>/dev/null || true
+            grep -Eq "$3" "$T/$1.out" || { echo "::error::$4"; cat "$T/$1.out"; exit 1; }
+            echo "$4 OK"
+          }
+          run_case bad  http://127.0.0.1:8742 'sha256 mismatch'              'tampered proxy download rejected'
+          run_case good http://127.0.0.1:8742 'sha256 matches GitHub'        'intact proxy download verified'
+          run_case good http://127.0.0.1:1    "cannot fetch GitHub's sha256" 'unreachable API degrades to warning'
+
       - name: Pipe mode (curl | bash style)
         run: |
           cat ai-cli-setup.sh | bash -s -- list >/dev/null && echo "pipe OK"
@@ -424,3 +533,24 @@ jobs:
       - name: bash 3.2 compatibility (macOS system bash)
         if: runner.os == 'macOS'
         run: /bin/bash -n ai-cli-setup.sh && /bin/bash ./ai-cli-setup.sh --version
+
+      - name: bash 3.2 end-to-end (macOS system bash)
+        if: runner.os == 'macOS'
+        run: |
+          # 上面的用例都经 `#!/usr/bin/env bash` 跑在 runner 的 Homebrew bash 上；
+          # 这里用 /bin/bash（3.2.57）真正跑一遍全量写配置 + 交互掩码输入 + 密钥导出。
+          export HOME="$RUNNER_TEMP/fakehome-b32" XDG_CONFIG_HOME="$RUNNER_TEMP/fakehome-b32/.config" AICLI_CN=0
+          mkdir -p "$HOME"
+          /bin/bash ./ai-cli-setup.sh all -y --skip-install \
+            --base-url https://gw.example.com/v1 --api-key sk-b32 --models m1,m2
+          test -f "$HOME/.grok/config.toml" && test -f "$HOME/.config/opencode/opencode.json"
+          printf '2\n7\nhttps://gw.example.com/v1\nsk-b32-secret\nm1\n' \
+            | AICLI_ASSUME_TTY=1 /bin/bash ./ai-cli-setup.sh --skip-install > /tmp/b32.out 2>&1
+          grep -q 'sk-b32-secret' /tmp/b32.out && { echo "::error::secret echoed under bash 3.2"; exit 1; }
+          grep -q '已选择：OpenCode' /tmp/b32.out || { echo "::error::interactive flow broke under bash 3.2"; cat /tmp/b32.out; exit 1; }
+          KEY="sk-it's \$& \\1 end"
+          SHELL=/bin/zsh AICLI_OPENCODE_V2=1 /bin/bash ./ai-cli-setup.sh opencode -y --skip-install \
+            --base-url https://gw.example.com/v1 --api-key "$KEY" --models m1 >/dev/null
+          got="$(bash -c "source '$HOME/.zshrc'; printf '%s' \"\$AICLI_GW_EXAMPLE_COM_API_KEY\"")"
+          [ "$got" = "$KEY" ] || { echo "::error::key export mangled under bash 3.2: [$got]"; cat "$HOME/.zshrc"; exit 1; }
+          echo "bash 3.2 end-to-end OK"
