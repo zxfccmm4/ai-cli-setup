@@ -474,7 +474,10 @@ jobs:
           for mode in --skip-install --dry-run; do
             out="$(AICLI_CN=1 AICLI_GH_PROXY=none ./ai-cli-setup.sh grok -y "$mode" \
                      --base-url https://gw.example.com/v1 --api-key k --model m 2>&1)"
-            printf '%s' "$out" | grep -Eq 'speed test|测速' && { echo "::error::benchmark ran during $mode"; exit 1; }
+            # 注意：跳过测速时的提示本身含「测速」二字，正则会误伤；这里只匹配真正的测速行
+            # （`测速 npm 官方 …` / `speed test npm: …`）。
+            printf '%s' "$out" | grep -Eq 'speed test (npm|node|github)|测速 (npm|node|GitHub)' \
+              && { echo "::error::benchmark ran during $mode"; exit 1; }
             printf '%s' "$out" | grep -Eq 'plan:|加速方案' || { echo "::error::plan line missing for $mode: $out"; exit 1; }
           done
           echo "bench skip OK"
