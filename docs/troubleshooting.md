@@ -159,8 +159,20 @@ curl -H "Authorization: Bearer $KEY" https://gw.example.com/v1/models | head
 
 ### 安装脚本下载超时
 
-安装全部走官方渠道，代理/镜像请按各自的官方文档配置（例如 npm 用
-`npm config set registry …`，`curl` 用 `HTTPS_PROXY`）。
+脚本自带国内网络加速（v2.2.0 起）：判断为大陆网络后，对 npm / Node.js / GitHub
+三个下载源分别实测带宽再择优。先看看它选了什么：
+
+```bash
+./ai-cli-setup.sh cn
+```
+
+- 判断为「未启用加速」但你确实在国内：加 `--cn` 强制开启。
+- 本地有 Clash 等代理：`--proxy http://127.0.0.1:7890` 最省事，优先级最高。
+- 脚本本身就下载不下来（`raw.githubusercontent.com` 被阻断）：用 README 顶部的 jsDelivr 一行命令。
+
+经反代下载的 GitHub 二进制（OpenCode release）会按 GitHub API 公布的 sha256 校验。
+看到 `sha256 mismatch … discarding it`，说明反代返回的内容不对，脚本已丢弃并改走其它渠道
+（通常是 npm）。`AICLI_GH_PROXY=none` 可强制直连 GitHub；`AICLI_GH_VERIFY=0` 可关闭校验（不建议）。
 
 ---
 

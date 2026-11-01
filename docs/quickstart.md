@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
 **方式 C：Release 产物**
 
 ```bash
-gh release download v2.1.0 -R zxfccmm4/ai-cli-setup
+gh release download -R zxfccmm4/ai-cli-setup      # 默认最新稳定版；也可指定 tag，如 v2.3.0
 chmod +x ai-cli-setup.sh          # GitHub asset 不带可执行位
 ./ai-cli-setup.sh
 ```

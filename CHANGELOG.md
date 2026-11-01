@@ -6,6 +6,56 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [Semantic Versioning](https://semver.org/).
 
+## [v2.3.0] - 2026-11-01
+
+### ✨ Features
+
+- 经反代下载的 GitHub 二进制（OpenCode release / musl 构建）按 GitHub API 公布的 sha256 校验，
+  不符即丢弃并改走其它渠道；API 不可达时只告警不阻断。新增 `AICLI_GH_VERIFY`（默认 `1`）
+- `--skip-install` / `--dry-run` 不再做国内测速（反正不下载，省 10~30s）
+- `doctor` 增加 `bun` / `unzip` 探测；`--help` 补上 `cn` 子命令与 `--grok-alias`
+
+### 🐛 Bug Fixes
+
+- OpenCode V2 **重跑**时导出到 shell rc 的密钥被写坏：node 分支先包引号再转义，把包裹引号也转成了
+  `'\''`，`export` 行实际求值为空串，opencode 直接 401。三条写入分支统一用正确的单引号转义，
+  含 `'`、`$&`、`\1` 等特殊字符的密钥也能原样回读
+- shell rc 文件改为以 `$SHELL` 为准：全新 zsh 账号（无任何 rc 文件）不再把密钥与 PATH 写进 zsh
+  永远不读的 `.bashrc`；由脚本新建的 rc 文件权限 `600`
+- Node.js 测速探针改用不可变的版本目录（`v22.20.0/…`）：原来写死 `latest-v22.x/<文件名>`，官方源
+  发新版后 404，官方侧测速恒为 0 B/s，等于盲选镜像（境外用户反而变慢）
+- 带值选项（`--model` `--base-url` `--api-key` `--models` `--proxy` `--lang` `--grok-alias`）缺参时
+  给出可读错误，不再是 `$2: unbound variable` 或静默 exit 1
+- `-y` 缺凭据时在安装阶段之前就报错，不再白装一遍
+- `cn` 子命令在未启用加速时不再把 Node 镜像打印成「方案」
+
+### ♻️ Refactoring
+
+- 删除未使用的 `confirm` / `json_read_str`（含 `eval`）/ `opencode_release_url`，合并重复常量
+
+### 🔧 CI
+
+- 新增回归用例：选项缺参、`-y` 早失败、rc 文件选择 + 密钥 `source` 逐字比对、探针路径、
+  测速跳过、反代摘要校验（本地假服务，全程离线）、macOS `/bin/bash` 3.2 端到端
+- 新增 Dependabot（github-actions，每周）
+- Release 说明的一行命令改为国际 + 大陆双版本，稳定版锁定到对应 tag
+
+## [v2.2.1] - 2026-10-26
+
+### 🐛 Bug Fixes
+
+- nodesource / omp.sh 安装无超时保护，国内不可达时无限挂起——补齐 connect/max 超时，
+  失败立即走镜像独立安装；收紧 GitHub 测速轮次与探针时长
+
+### 📝 Documentation
+
+- README 顶部与 `--help` 新增中国大陆 one-liner（jsDelivr CDN + `--cn`），
+  解决「curl 拉脚本先于加速层生效」的先后依赖问题
+
+### 🔨 Chores
+
+- bump VERSION 到 2.2.1
+
 ## [v2.2.0] - 2026-10-26
 
 ### ✨ Features
@@ -20,20 +70,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versio
   `AICLI_NPM_REGISTRY`、`AICLI_NODE_MIRROR`、`AICLI_GH_PROXY` 环境变量
 - OpenCode 安装器失败时改为直连 GitHub Release 兜底（支持 macOS zip 与 Linux tar.gz）
 - 重写 README：新增「国内网络加速」章节、完整参数表与实测数据
-- README 顶部与 `--help` 新增中国大陆 one-liner（jsDelivr CDN + `--cn`），
-  解决「curl 拉脚本先于加速层生效」的先后依赖问题
 
 ### 🐛 Bug Fixes
 
 - 修复 `export NPM_CONFIG_REGISTRY="$(...)"` 触发 SC2155
 - 加速逻辑不写入用户 `~/.npmrc`，仅通过进程环境变量生效
-- nodesource / omp.sh 安装无超时保护，国内不可达时无限挂起——补齐 connect/max 超时，
-  失败立即走镜像独立安装；收紧 GitHub 测速轮次与探针时长
 
 ### 🔨 Chores
 
 - bump VERSION 到 2.2.0
-- bump VERSION 到 2.2.1（补上 v2.2.1 发布时漏掉的版本号）
 
 ## [v2.1.0] - 2026-10-12
 
