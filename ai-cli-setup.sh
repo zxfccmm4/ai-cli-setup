@@ -20,7 +20,7 @@
 #
 set -Eeuo pipefail
 
-VERSION="2.2.1"
+VERSION="2.3.0"
 NAME="ai-cli-setup"
 
 # ============================================================
@@ -198,17 +198,6 @@ read_secret() {
   return 0
 }
 
-confirm() {
-  local __p="${1:-}" __def="${2:-n}" __ans=""
-  [ "$NON_INTERACTIVE" -eq 1 ] && return 0
-  if [ "$__def" = "y" ]; then
-    read_line __ans "$__p ${DIM}[Y/n]${RESET} "
-    case "$__ans" in ""|[yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
-  fi
-  read_line __ans "$__p ${DIM}[y/N]${RESET} "
-  case "$__ans" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
-}
-
 # ============================================================
 # 5. 平台
 # ============================================================
@@ -223,16 +212,18 @@ is_root() { [ "$(id -u)" -eq 0 ]; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# 选择写 PATH / 密钥导出用的 shell rc 文件：以 $SHELL 为准。登录 shell 是 zsh 就写
+# ~/.zshrc（不存在则新建），是 bash 就写 ~/.bashrc。
+# 之前“哪个文件存在写哪个、都没有就写 .bashrc”的做法，在全新 macOS 账号（默认 zsh、
+# 没有任何 rc 文件）上会把 OpenCode V2 的密钥和 PATH 写进 zsh 永远不读的 .bashrc：
+# opencode 拿不到凭据直接 401，刚装好的命令新开终端也找不到。
 detect_shellrc() {
   case "${SHELL:-}" in
-    *zsh*) [ -f "$HOME/.zshrc" ] && { printf '%s' "$HOME/.zshrc"; return 0; } ;;
-    *bash*) [ -f "$HOME/.bashrc" ] && { printf '%s' "$HOME/.bashrc"; return 0; } ;;
+    *zsh*)  printf '%s' "$HOME/.zshrc"; return 0 ;;
+    *bash*) printf '%s' "$HOME/.bashrc"; return 0 ;;
   esac
+  # $SHELL 未知（ash / sh 等）：沿用已存在的文件，否则 .bashrc
   if [ -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.bashrc" ]; then
-    printf '%s' "$HOME/.zshrc"
-  elif [ -f "$HOME/.bashrc" ]; then
-    printf '%s' "$HOME/.bashrc"
-  elif [ -f "$HOME/.zshrc" ]; then
     printf '%s' "$HOME/.zshrc"
   else
     printf '%s' "$HOME/.bashrc"
@@ -314,8 +305,10 @@ PROXY="${AICLI_PROXY:-}"
 NPM_REGISTRY="${AICLI_NPM_REGISTRY:-https://registry.npmmirror.com/}"
 NPM_REGISTRY_OFFICIAL="https://registry.npmjs.org/"
 NODE_MIRROR="${AICLI_NODE_MIRROR:-https://npmmirror.com/mirrors/node}"
-NODE_MIRROR_OFFICIAL="https://nodejs.org/dist"
 GH_PROXY=""
+# GitHub REST API：经反代下载二进制时从这里取官方 sha256 做校验（CI 用本地假服务替换）
+GH_API="${AICLI_GH_API:-https://api.github.com}"
+OPENCODE_REPO="anomalyco/opencode"
 # 存放 dist 的目录前缀：nodejs.org/dist/latest-v22.x/... 与
 # npmmirror.com/mirrors/node/latest-v22.x/... 布局不同，只能各记各的，不能拼接。
 NODE_DIST_OFFICIAL="https://nodejs.org/dist"
@@ -323,6 +316,12 @@ NODE_DIST_MIRROR="${NODE_MIRROR%/}"
 NODE_DIST=""
 # 实测能返回真实二进制的 GitHub 反代（ghproxy.cn 会返回 HTML 验证页，已排除）
 GH_PROXY_CANDIDATES="https://gh-proxy.com/ https://ghproxy.net/ https://ghfast.top/"
+# 测速探针（只估带宽，任何足够大的文件都行）。
+# Node 的探针必须指向“带版本号的固定目录”（v22.20.0/…）：这些目录永久不变、官方与
+# 镜像都有。不能写成 latest-v22.x/<固定文件名>——官方源一发新版旧文件就 404（镜像又
+# 可能滞后几个版本、两边对不上），官方侧测速恒为 0 B/s，等于盲选镜像，境外用户反而变慢。
+NODE_PROBE_FILE="v22.20.0/node-v22.20.0-darwin-arm64.tar.gz"
+NPM_PROBE_FILE="@openai/codex/-/codex-0.50.0.tgz"
 
 is_cn_network() {
   local tz="" cc=""
@@ -401,6 +400,64 @@ gh_mirror_url() {
   if [ -n "$GH_PROXY" ]; then printf '%s%s' "${GH_PROXY%/}/" "$url"; else printf '%s' "$url"; fi
 }
 
+# ---- 经反代下载的 GitHub 二进制：按 GitHub API 公布的 sha256 校验 ----
+# 反代是第三方服务，理论上可以篡改响应体。GitHub Release API 对每个资产都给出
+# digest（sha256:…），而 api.github.com 通常可直连：拿得到就强校验，拿不到只告警，
+# 不因此卡死国内用户。只在真的走了反代时才校验——直连 GitHub 本身就是可信源。
+# AICLI_GH_VERIFY=0 关闭；AICLI_GH_API 可换 API 地址（CI 用本地假服务做回归）。
+gh_asset_digest() {  # gh_asset_digest <owner/repo> <asset-name> -> sha256 hex，失败输出空
+  local repo="$1" asset="$2" json="" out=""
+  have curl || return 0
+  json="$(curl -fsSL --connect-timeout 5 --max-time 15 -H 'Accept: application/vnd.github+json' \
+           "$GH_API/repos/$repo/releases/latest" 2>/dev/null || true)"
+  [ -n "$json" ] || return 0
+  if have jq; then
+    out="$(printf '%s' "$json" | jq -r --arg n "$asset" '.assets[]? | select(.name==$n) | .digest // empty' 2>/dev/null | head -1)"
+  elif have node; then
+    out="$(printf '%s' "$json" | ASSET="$asset" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const a=(JSON.parse(s).assets||[]).find(x=>x.name===process.env.ASSET);if(a&&a.digest)console.log(a.digest)}catch(e){}})' 2>/dev/null)"
+  elif have python3; then
+    out="$(printf '%s' "$json" | ASSET="$asset" python3 -c 'import json,os,sys
+try:
+    for a in json.load(sys.stdin).get("assets") or []:
+        if a.get("name") == os.environ["ASSET"] and a.get("digest"):
+            print(a["digest"]); break
+except Exception:
+    pass' 2>/dev/null)"
+  fi
+  printf '%s' "${out#sha256:}"
+}
+
+sha256_of() {  # sha256_of <file> -> hex，没有可用工具时输出空
+  if have sha256sum; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif have shasum; then shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  elif have openssl; then openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
+  fi
+}
+
+# verify_gh_download <file> <owner/repo> <asset-name>
+# 返回 1 = 校验失败（调用方必须丢弃文件）；0 = 通过，或没走反代 / 无法校验（已告警）。
+verify_gh_download() {
+  local file="$1" repo="$2" asset="$3" want="" got=""
+  [ -n "$GH_PROXY" ] || return 0
+  [ "${AICLI_GH_VERIFY:-1}" != "0" ] || return 0
+  want="$(gh_asset_digest "$repo" "$asset")"
+  if [ -z "$want" ]; then
+    warn "$(lc "cannot fetch GitHub's sha256 for $asset; this proxied download is unverified" "拿不到 GitHub 公布的 ${asset} sha256，本次反代下载未经校验")"
+    return 0
+  fi
+  got="$(sha256_of "$file")"
+  if [ -z "$got" ]; then
+    warn "$(lc 'no sha256sum/shasum/openssl; proxied download is unverified' '缺少 sha256sum / shasum / openssl，反代下载未经校验')"
+    return 0
+  fi
+  if [ "$got" != "$want" ]; then
+    err "$(lc "sha256 mismatch for $asset via $GH_PROXY (GitHub: $want, got: $got); discarding it" "经 ${GH_PROXY} 下载的 ${asset} sha256 不匹配（GitHub 公布 ${want}，实际 ${got}），已丢弃")"
+    return 1
+  fi
+  ok "$(lc "sha256 matches GitHub: $asset" "sha256 与 GitHub 公布值一致：$asset")"
+  return 0
+}
+
 cn_init() {
   case "$(printf '%s' "${AICLI_CN:-auto}" | tr 'A-Z' 'a-z')" in
     1|true|yes|on)  CN_MODE=1 ;;
@@ -428,14 +485,20 @@ cn_init() {
     return 0
   fi
 
+  # 只写配置 / 预演时不会下载任何东西，三轮测速（约 10~30s）纯属浪费：直接按镜像落定。
+  if [ "$SKIP_INSTALL" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
+    AICLI_CN_BENCH=0
+    info "$(lc 'skip-install/dry-run: nothing to download, skipping speed tests' 'skip-install / dry-run：无需下载，跳过测速')"
+  fi
+
   # 2) npm：官方 vs 淘宝源
   # tarball 是 npm 装包的真实流量来源，用它测更有代表性
-  NPM_CONFIG_REGISTRY="$(pick_faster "$NPM_REGISTRY_OFFICIAL" "$NPM_REGISTRY" "npm" "@openai/codex/-/codex-0.50.0.tgz")"
+  NPM_CONFIG_REGISTRY="$(pick_faster "$NPM_REGISTRY_OFFICIAL" "$NPM_REGISTRY" "npm" "$NPM_PROBE_FILE")"
   export NPM_CONFIG_REGISTRY
 
-  # 3) Node.js 包
+  # 3) Node.js 包（探针路径见 NODE_PROBE_FILE 的说明）
   local node_pick
-  node_pick="$(pick_faster "$NODE_MIRROR_OFFICIAL" "$NODE_MIRROR" "node" "latest-v22.x/node-v22.20.0-darwin-arm64.tar.gz")"
+  node_pick="$(pick_faster "$NODE_DIST_OFFICIAL" "$NODE_MIRROR" "node" "$NODE_PROBE_FILE")"
   if [ "$node_pick" = "$NODE_MIRROR" ]; then NODE_DIST="$NODE_DIST_MIRROR"; else NODE_DIST="$NODE_DIST_OFFICIAL"; fi
 
   # 4) GitHub：直连 vs 反代（用户显式指定时跳过测速）
@@ -461,20 +524,10 @@ cn_init() {
 
 # cn_selftest_out：`ai-cli-setup cn` 的输出，用来确认加速方案
 cn_selftest_out() {
+  # 未启用加速 / 走本地代理时 NODE_DIST 为空，此时实际用的是官方源，不能把镜像打印成“方案”
   printf 'CN_MODE=%s\nPROXY=%s\nNPM_REGISTRY=%s\nNODE_MIRROR=%s\nGH_PROXY=%s\n' \
     "$CN_MODE" "${PROXY:-none}" "${NPM_CONFIG_REGISTRY:-official}" \
-    "${NODE_DIST:-$NODE_DIST_MIRROR}" "${GH_PROXY:-direct}"
-}
-
-# GitHub release 直链原始 URL（未套反代）
-opencode_release_url() {
-  local arch="x64"
-  case "$(uname -m)" in aarch64|arm64) arch="arm64" ;; esac
-  case "$OS" in
-    macos) if [ "$ARCH" = "arm64" ]; then printf '%s' "https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-arm64.zip";
-           else printf '%s' "https://github.com/anomalyco/opencode/releases/latest/download/opencode-darwin-x64.zip"; fi ;;
-    *) printf '%s' "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}-musl.tar.gz" ;;
-  esac
+    "${NODE_DIST:-$NODE_DIST_OFFICIAL}" "${GH_PROXY:-direct}"
 }
 
 # ============================================================
@@ -735,7 +788,8 @@ install_opencode_musl() {
   case "$(uname -m)" in
     aarch64|arm64) arch="arm64" ;;
   esac
-  local url; url="$(gh_mirror_url "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${arch}-musl.tar.gz")"
+  local asset="opencode-linux-${arch}-musl.tar.gz"
+  local url; url="$(gh_mirror_url "https://github.com/$OPENCODE_REPO/releases/latest/download/$asset")"
   local bindir="$HOME/.opencode/bin" tmpd
   mkdir -p "$bindir"
   tmpd="$(mktemp -d "${TMPDIR:-/tmp}/aicli-oc.XXXXXX")" || return 1
@@ -745,6 +799,7 @@ install_opencode_musl() {
   else
     wget -q --timeout=300 -O "$tmpd/oc.tar.gz" "$url" || { rm -rf "$tmpd"; return 1; }
   fi
+  verify_gh_download "$tmpd/oc.tar.gz" "$OPENCODE_REPO" "$asset" || { rm -rf "$tmpd"; return 1; }
   tar -xzf "$tmpd/oc.tar.gz" -C "$bindir" || { rm -rf "$tmpd"; return 1; }
   rm -rf "$tmpd"
   chmod +x "$bindir/opencode" 2>/dev/null || true
@@ -793,13 +848,14 @@ install_opencode_release() {
     macos) [ "$ARCH" = "arm64" ] && out="opencode-darwin-arm64" || out="opencode-darwin-x64"; ext="zip" ;;
     *) out="opencode-linux-${arch}"; ext="tar.gz" ;;
   esac
-  url="$(gh_mirror_url "https://github.com/anomalyco/opencode/releases/latest/download/${out}.${ext}")"
+  url="$(gh_mirror_url "https://github.com/$OPENCODE_REPO/releases/latest/download/${out}.${ext}")"
   info "$(lc "downloading opencode release ($OS/$arch)" "直接下载 opencode release：$OS/$arch")"
   if have curl; then
     curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmpd/pkg" "$url" || { rm -rf "$tmpd"; return 1; }
   else
     wget -q --timeout=300 -O "$tmpd/pkg" "$url" || { rm -rf "$tmpd"; return 1; }
   fi
+  verify_gh_download "$tmpd/pkg" "$OPENCODE_REPO" "${out}.${ext}" || { rm -rf "$tmpd"; return 1; }
   if [ "$ext" = "zip" ]; then
     ( cd "$tmpd" && unzip -oq pkg -d unpacked ) || { rm -rf "$tmpd"; return 1; }
     # zip 内可能带子目录，找可执行文件
@@ -966,31 +1022,17 @@ for x in a:
 }
 
 # ============================================================
-# 9. JSON 工具（无 jq 依赖）
+# 9. 转义工具（shell / TOML / JSON，无 jq 依赖）
 # ============================================================
-json_read_str() {  # json_read_str <file> <pyexpr> — 用 node 或 python3 读 JSON 字符串
-  local f="$1" expr="$2"
-  if have node; then node -e 'const c=require(process.argv[1]); console.log(eval(process.argv[2]))' "$f" "$expr" 2>/dev/null
-  elif have python3; then python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))" "$f" "$expr" 2>/dev/null
-  fi
-}
-
-# ============================================================
-# 10. 配置写入（每个 agent 一个函数；原子写 + 备份 + 600）
-# ============================================================
-backup_file() {
-  local f="$1" bak
-  [ -f "$f" ] || return 0
-  bak="${f}.bak.$(date +%Y%m%d%H%M%S)"
-  if cp -p "$f" "$bak"; then
-    chmod 600 "$bak" 2>/dev/null || true
-    info "$(lc "backed up: $f -> $bak" "已备份：$f -> $bak")"
-  fi
-}
-write_600() {  # write_600 <target> <tmpfile>
-  chmod 600 "$2" 2>/dev/null || true
-  mv -f "$2" "$1"
-  chmod 600 "$1" 2>/dev/null || true
+# sq <s>：shell 单引号字面量（内部的 ' 写成 '\''），用于往 shell rc 里写值。
+# 逐字符拼接而不用 ${s//\'/…}：bash 3.2 对替换串里的反斜杠处理与 4.x 不同，会写坏。
+sq() {
+  local s="${1:-}" out="" c i q="'\\''"
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:$i:1}"
+    if [ "$c" = "'" ]; then out="$out$q"; else out="$out$c"; fi
+  done
+  printf "'%s'" "$out"
 }
 
 toml_escape() {
@@ -1011,6 +1053,24 @@ json_escape() {
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
   s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
   printf '"%s"' "$s"
+}
+
+# ============================================================
+# 10. 配置写入（每个 agent 一个函数；原子写 + 备份 + 600）
+# ============================================================
+backup_file() {
+  local f="$1" bak
+  [ -f "$f" ] || return 0
+  bak="${f}.bak.$(date +%Y%m%d%H%M%S)"
+  if cp -p "$f" "$bak"; then
+    chmod 600 "$bak" 2>/dev/null || true
+    info "$(lc "backed up: $f -> $bak" "已备份：$f -> $bak")"
+  fi
+}
+write_600() {  # write_600 <target> <tmpfile>
+  chmod 600 "$2" 2>/dev/null || true
+  mv -f "$2" "$1"
+  chmod 600 "$1" 2>/dev/null || true
 }
 
 # --- pi / omo：结构相同（models.json + settings.json） ---
@@ -1389,32 +1449,37 @@ export_oc_key() {
   if [ ! -f "$shellrc" ]; then
     mkdir -p "$(dirname "$shellrc")" 2>/dev/null || true
     : > "$shellrc" 2>/dev/null || return 0
+    chmod 600 "$shellrc" 2>/dev/null || true   # 新建的 rc 马上要写明文密钥，别留 644
   fi
   if grep -q "^export ${env_var}=" "$shellrc" 2>/dev/null; then
+    # 值用单引号包裹、内部单引号写成 '\''；替换用回调 / lambda，避免密钥里的 $& 、\1 等
+    # 被当成替换模板。之前 node 分支先包引号再转义，把包裹引号也转成了 '\''，写出的
+    # export 行实际求值为空串——首次运行正常（走下面的追加分支），重跑一次 opencode 就 401。
     if have node; then
       SHELLRC="$shellrc" ENVVAR="$env_var" KEYVAL="$API_KEY" node -e '
         const fs=require("fs"),e=process.env;
         const re=new RegExp("^export "+e.ENVVAR+"=.*$","m");
-        const v="export "+e.ENVVAR+"="+JSON.stringify(e.KEYVAL).replace(/^"|"$/g,"\x27").replace(/\x27/g,"\x27\\\x27\x27");
-        fs.writeFileSync(e.SHELLRC, fs.readFileSync(e.SHELLRC,"utf8").replace(re, v));
+        const v="export "+e.ENVVAR+"=\x27"+e.KEYVAL.replace(/\x27/g,"\x27\\\x27\x27")+"\x27";
+        fs.writeFileSync(e.SHELLRC, fs.readFileSync(e.SHELLRC,"utf8").replace(re, () => v));
       ' 2>/dev/null || true
     elif have python3; then
       python3 - "$shellrc" "$env_var" "$API_KEY" <<'PYK' 2>/dev/null || true
 import sys, re
 path, var, val = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(path).read()
-s = re.sub(r"^export %s=.*$" % var, "export %s='%s'" % (var, val.replace("'", "'\\''")), s, flags=re.M)
+line = "export %s='%s'" % (var, val.replace("'", "'\\''"))
+s = re.sub(r"^export %s=.*$" % re.escape(var), lambda m: line, s, flags=re.M)
 open(path, "w").write(s)
 PYK
     else
       # 无 node/python3：先删旧行再追加，避免留下两条互相覆盖的 export
       local rest; rest="$(grep -v "^export ${env_var}=" "$shellrc" 2>/dev/null || true)"
-      { printf '%s\n' "$rest"; printf 'export %s=%s\n' "$env_var" "'$API_KEY'"; } > "${shellrc}.aicli.tmp" \
+      { printf '%s\n' "$rest"; printf 'export %s=%s\n' "$env_var" "$(sq "$API_KEY")"; } > "${shellrc}.aicli.tmp" \
         && mv -f "${shellrc}.aicli.tmp" "$shellrc" || rm -f "${shellrc}.aicli.tmp"
     fi
     info "$(lc "updated $env_var in $shellrc" "已更新 $shellrc 中的 $env_var")"
   else
-    printf '\n# %s gateway key (added by ai-cli-setup)\nexport %s=%s\n' "$provider" "$env_var" "'$API_KEY'" >> "$shellrc"
+    printf '\n# %s gateway key (added by ai-cli-setup)\nexport %s=%s\n' "$provider" "$env_var" "$(sq "$API_KEY")" >> "$shellrc"
     info "$(lc "exported $env_var in $shellrc (key not stored in opencode.json)" "已在 $shellrc 导出 ${env_var}（key 不写入 opencode.json）")"
   fi
   # 写进 shell 配置只对新开的 shell 生效；当前终端里的 opencode 会拿不到凭据。
@@ -1832,7 +1897,7 @@ cmd_doctor() {
   printf '  %-14s %s\n' "$(lc 'language' '语言')" "$LANG_CODE"
   printf '\n%s\n' "${BOLD}$(lc 'commands' '命令')${RESET}"
   local c
-  for c in curl wget node npm python3 jq; do
+  for c in curl wget node npm bun python3 jq unzip; do
     if have "$c"; then printf '  %s  %-8s %s\n' "${GREEN}✓${RESET}" "$c" "$(command -v "$c")"
     else printf '  %s  %-8s %s\n' "${YELLOW}·${RESET}" "$c" "${DIM}$(lc 'not found' '未安装')${RESET}"; fi
   done
@@ -1857,7 +1922,7 @@ ${BOLD}$NAME $VERSION${RESET} — $(lc 'one-shot installer + configurator for AI
 ${BOLD}$(lc 'USAGE' '用法')${RESET}
   $NAME                                    $(lc 'interactive: language → agents → install → configure' '交互：语言 → agent → 安装 → 配置')
   $NAME <agent>[,agent...] [options]       $(lc 'direct: pi opencode pi,claude all ...' '直接指定：pi / opencode / pi,claude / all')
-  $NAME list | doctor | help
+  $NAME list | doctor | cn | help
 
 ${BOLD}$(lc 'AGENTS' 'agent')${RESET}
   pi          Pi                https://pi.dev            npm/@earendil-works/pi-coding-agent
@@ -1877,6 +1942,7 @@ ${BOLD}$(lc 'OPTIONS' '选项')${RESET}
       --api-key KEY      $(lc 'API key (masked input: first3+***+last3)' 'API key（掩码输入：前3+***+后3）')
       --models a,b,c     $(lc 'model ids to register (pi/omo/omp/opencode)' '注册的模型 id（pi/omo/omp/opencode）')
       --model ID         $(lc 'default model (claude/codex/grok/omp/opencode)' '默认模型（claude/codex/grok/omp/opencode）')
+      --grok-alias NAME  $(lc 'Grok model alias (default: main)' 'Grok 模型别名（默认 main）')
       --skip-install     $(lc 'configure only' '只配置，不安装')
       --dry-run          $(lc 'print plan only' '只打印计划')
       --fail-fast        $(lc 'stop at first failure' '首败即停')
@@ -1896,6 +1962,7 @@ ${BOLD}$(lc 'CN ACCELERATION' '国内加速')${RESET}
   AICLI_NPM_REGISTRY  $(lc 'default https://registry.npmmirror.com/' '默认 https://registry.npmmirror.com/')
   AICLI_NODE_MIRROR   $(lc 'default https://npmmirror.com/mirrors/node' '默认 https://npmmirror.com/mirrors/node')
   AICLI_GH_PROXY      $(lc 'default auto (benchmarked); set a prefix to force, "none" to disable' '默认 auto（自动测速）；可指定反代前缀，或 none 关闭')
+  AICLI_GH_VERIFY     $(lc '1 (default): check proxied GitHub downloads against the sha256 GitHub publishes; 0 to skip' '默认 1：经反代下载的 GitHub 二进制按 GitHub 公布的 sha256 校验；0 关闭')
   $NAME cn           $(lc 'show the detected acceleration plan' '查看加速检测结果')
   $(lc 'In mainland China, download this script via CDN first (acceleration only applies after bash starts):' '中国大陆请先用 CDN 下载本脚本（加速在 bash 启动后才生效）：')
     curl -fsSL https://cdn.jsdelivr.net/gh/zxfccmm4/ai-cli-setup@main/ai-cli-setup.sh | bash -s -- --cn
@@ -1919,6 +1986,14 @@ EOF
 # ============================================================
 # 14. 参数解析 / 主流程
 # ============================================================
+# need_arg <option> <remaining-argc>：带值选项后面没跟值时给出可读错误。
+# 之前直接取 "$2"：set -u 下报 "$2: unbound variable"；--lang 用了 ${2:-en}，
+# 于是 shift 2 失败被 set -e 静默杀掉，用户只看到 exit 1、一个字的提示都没有。
+need_arg() {
+  [ "$2" -ge 2 ] && return 0
+  die "$(lc "option $1 requires a value (see --help)" "选项 $1 需要一个值（见 --help）")"
+}
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1927,16 +2002,16 @@ parse_args() {
       --dry-run) DRY_RUN=1; shift ;;
       --fail-fast) FAIL_FAST=1; shift ;;
       --assume-tty) ASSUME_TTY=1; shift ;;
-      -l|--lang) LANG_CODE="$(normalize_lang "${2:-en}")"; LANG_EXPLICIT=1; shift 2 ;;
+      -l|--lang) need_arg "$1" "$#"; LANG_CODE="$(normalize_lang "$2")"; LANG_EXPLICIT=1; shift 2 ;;
       --cn) AICLI_CN=1; shift ;;
       --no-cn) AICLI_CN=0; shift ;;
-      --proxy) PROXY="$2"; export AICLI_PROXY="$2"; shift 2 ;;
+      --proxy) need_arg "$1" "$#"; PROXY="$2"; export AICLI_PROXY="$2"; shift 2 ;;
       cn) COMMAND="$1"; shift ;;
-      --base-url) BASE_URL="$2"; shift 2 ;;
-      --api-key) API_KEY="$2"; shift 2 ;;
-      --models) MODELS="$2"; shift 2 ;;
-      --model) MODEL="$2"; shift 2 ;;
-      --grok-alias) GROK_ALIAS="$2"; shift 2 ;;
+      --base-url) need_arg "$1" "$#"; BASE_URL="$2"; shift 2 ;;
+      --api-key) need_arg "$1" "$#"; API_KEY="$2"; shift 2 ;;
+      --models) need_arg "$1" "$#"; MODELS="$2"; shift 2 ;;
+      --model) need_arg "$1" "$#"; MODEL="$2"; shift 2 ;;
+      --grok-alias) need_arg "$1" "$#"; GROK_ALIAS="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       -V|--version) printf '%s %s\n' "$NAME" "$VERSION"; exit 0 ;;
       list|doctor|help) COMMAND="$1"; shift ;;
@@ -1966,6 +2041,13 @@ main() {
     doctor) cmd_doctor; exit 0 ;;
     cn) cn_init; cn_selftest_out; exit 0 ;;
   esac
+
+  # 非交互模式缺凭据：现在就报错。之前要等整个安装阶段跑完（可能是几分钟的下载）
+  # 才在配置阶段 die，白装一场；配置阶段对凭据的要求是确定的，没必要拖到那时。
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then
+    [ -n "$BASE_URL" ] || die "$(lc 'missing --base-url' '缺少 --base-url')"
+    [ -n "$API_KEY" ] || die "$(lc 'missing --api-key' '缺少 --api-key')"
+  fi
 
   printf '\n%s\n' "${BOLD}$NAME $VERSION${RESET} — $(lc 'AI agent installer + configurator' 'AI agent 安装 + 配置')${RESET}" >&2
 
