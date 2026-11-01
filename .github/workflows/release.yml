@@ -11,7 +11,7 @@ on:
         required: false
         type: string
 
-# 同一 ref 上的多次触发只保留最新一次：滚动 latest 渠道没必要排队跑完旧提交。
+# 同一 ref 上的多次触发排队串行执行；不取消进行中的任务，避免发布产物写到一半被打断。
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -154,8 +154,11 @@ jobs:
             echo "## 一键安装 / One-liner"
             echo
             echo '```bash'
-            echo "# 下载并运行（自动从 raw 拉取配套文件）"
-            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/ai-cli-setup.sh | bash -s -- all"
+            echo "# 国际 / 可直连 GitHub（锁定本版本）"
+            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${v}/ai-cli-setup.sh | bash"
+            echo
+            echo "# 中国大陆：jsDelivr CDN 拉脚本 + 国内镜像加速"
+            echo "curl -fsSL https://cdn.jsdelivr.net/gh/${{ github.repository }}@${v}/ai-cli-setup.sh | bash -s -- --cn"
             echo '```'
             echo
             echo "### 产物 / Assets"
@@ -247,8 +250,11 @@ jobs:
             echo "## 一键安装 / One-liner"
             echo
             echo '```bash'
-            echo "# 始终取 main 最新（等价于本渠道内容）"
-            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/ai-cli-setup.sh | bash -s -- all"
+            echo "# 国际 / 可直连 GitHub（始终取 main 最新，等价于本渠道内容）"
+            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/ai-cli-setup.sh | bash"
+            echo
+            echo "# 中国大陆：jsDelivr CDN 拉脚本 + 国内镜像加速"
+            echo "curl -fsSL https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/ai-cli-setup.sh | bash -s -- --cn"
             echo '```'
             echo
             echo "### 产物 / Assets"
