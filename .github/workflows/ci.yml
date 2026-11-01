@@ -514,20 +514,25 @@ jobs:
           REAL_CURL="$(type -P curl)"
           printf '#!/bin/sh\nfor a in "$@"; do case "$a" in *127.0.0.1*) exec %s "$@" ;; esac; done\nexit 22\n' "$REAL_CURL" > "$SHIM/curl"
           chmod +x "$SHIM/curl"
-          run_case() {  # run_case <mode> <api-url> <expect-regex> <label>
-            python3 "$T/srv.py" "$1" 8742 & srv=$!; sleep 1
-            export HOME="$T/home-$1-$RANDOM" XDG_CONFIG_HOME="$HOME/.config"; mkdir -p "$HOME"
+          run_case() {  # run_case <mode> <port> <api-url> <expect-regex> <label>
+            # 每个用例独立端口，并等到服务真的在监听再开跑：macOS runner 上复用同一端口
+            # 曾撞上前一个进程尚未释放的 socket，连接挂到超时。
+            python3 "$T/srv.py" "$1" "$2" & srv=$!
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+              curl -fsS --max-time 1 "http://127.0.0.1:$2/repos/x/y/releases/latest" >/dev/null 2>&1 && break; sleep 1
+            done
+            export HOME="$T/home-$1-$2" XDG_CONFIG_HOME="$HOME/.config"; mkdir -p "$HOME"
             set +e
-            PATH="$SHIM" AICLI_CN=1 AICLI_CN_BENCH=0 AICLI_GH_PROXY="http://127.0.0.1:8742/" AICLI_GH_API="$2" \
-              "$SHIM/bash" ./ai-cli-setup.sh opencode -y -l en --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > "$T/$1.out" 2>&1
+            PATH="$SHIM" AICLI_CN=1 AICLI_CN_BENCH=0 AICLI_GH_PROXY="http://127.0.0.1:$2/" AICLI_GH_API="$3" \
+              "$SHIM/bash" ./ai-cli-setup.sh opencode -y -l en --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > "$T/$1-$2.out" 2>&1
             set -e
             kill "$srv" 2>/dev/null || true; wait "$srv" 2>/dev/null || true
-            grep -Eq "$3" "$T/$1.out" || { echo "::error::$4"; cat "$T/$1.out"; exit 1; }
-            echo "$4 OK"
+            grep -Eq "$4" "$T/$1-$2.out" || { echo "::error::$5"; cat "$T/$1-$2.out"; exit 1; }
+            echo "$5 OK"
           }
-          run_case bad  http://127.0.0.1:8742 'sha256 mismatch'              'tampered proxy download rejected'
-          run_case good http://127.0.0.1:8742 'sha256 matches GitHub'        'intact proxy download verified'
-          run_case good http://127.0.0.1:1    "cannot fetch GitHub's sha256" 'unreachable API degrades to warning'
+          run_case bad  8742 http://127.0.0.1:8742 'sha256 mismatch'              'tampered proxy download rejected'
+          run_case good 8743 http://127.0.0.1:8743 'sha256 matches GitHub'        'intact proxy download verified'
+          run_case good 8744 http://127.0.0.1:1    "cannot fetch GitHub's sha256" 'unreachable API degrades to warning'
 
       - name: Pipe mode (curl | bash style)
         run: |
