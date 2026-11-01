@@ -489,15 +489,20 @@ jobs:
           # shim PATH 里没有 node/npm/bun/opencode，curl 只允许访问 127.0.0.1（其余立即失败）。
           T="$RUNNER_TEMP/digest"; mkdir -p "$T"
           cat > "$T/srv.py" <<'PY'
-          import http.server, hashlib, json, sys
-          MODE = sys.argv[1]
+          import http.server, hashlib, json
           PAYLOAD = b"definitely-not-an-opencode-binary\n" * 64
           NAMES = ["opencode-darwin-arm64.zip","opencode-darwin-x64.zip","opencode-linux-x64.tar.gz",
                    "opencode-linux-arm64.tar.gz","opencode-linux-x64-musl.tar.gz","opencode-linux-arm64-musl.tar.gz"]
           class H(http.server.BaseHTTPRequestHandler):
               def do_GET(self):
-                  if self.path.startswith("/repos/"):
-                      d = hashlib.sha256(PAYLOAD).hexdigest() if MODE == "good" else "0"*64
+                  # 路径首段是用例模式：/good/… 返回正确摘要，/bad/… 返回错误摘要。
+                  # 一个服务跑完全部用例，不按用例起停进程：macOS runner 上第二个起的
+                  # 进程端口曾一直连不上（连接超时而非拒绝）。
+                  parts = self.path.split("/", 2)
+                  mode = parts[1] if len(parts) > 1 else ""
+                  rest = "/" + (parts[2] if len(parts) > 2 else "")
+                  if rest.startswith("/repos/"):
+                      d = hashlib.sha256(PAYLOAD).hexdigest() if mode == "good" else "0"*64
                       body = json.dumps({"assets":[{"name":n,"digest":"sha256:"+d} for n in NAMES]}).encode()
                       ct = "application/json"
                   else:
@@ -505,7 +510,7 @@ jobs:
                   self.send_response(200); self.send_header("Content-Type", ct)
                   self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
               def log_message(self, *a): pass
-          http.server.HTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+          http.server.HTTPServer(("127.0.0.1", 8742), H).serve_forever()
           PY
           SHIM="$T/shim/bin"; mkdir -p "$SHIM"
           for c in bash sh env sed grep cut tr mktemp date mkdir mv cp chmod printf uname id stty dirname basename head tail cat wc ln rm sleep python3 seq awk tar unzip readlink od find sha256sum shasum openssl jq; do
@@ -514,25 +519,27 @@ jobs:
           REAL_CURL="$(type -P curl)"
           printf '#!/bin/sh\nfor a in "$@"; do case "$a" in *127.0.0.1*) exec %s "$@" ;; esac; done\nexit 22\n' "$REAL_CURL" > "$SHIM/curl"
           chmod +x "$SHIM/curl"
-          run_case() {  # run_case <mode> <port> <api-url> <expect-regex> <label>
-            # 每个用例独立端口，并等到服务真的在监听再开跑：macOS runner 上复用同一端口
-            # 曾撞上前一个进程尚未释放的 socket，连接挂到超时。
-            python3 "$T/srv.py" "$1" "$2" & srv=$!
-            for _ in 1 2 3 4 5 6 7 8 9 10; do
-              curl -fsS --max-time 1 "http://127.0.0.1:$2/repos/x/y/releases/latest" >/dev/null 2>&1 && break; sleep 1
-            done
-            export HOME="$T/home-$1-$2" XDG_CONFIG_HOME="$HOME/.config"; mkdir -p "$HOME"
+          python3 "$T/srv.py" & SRV=$!
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            curl -fsS --max-time 1 http://127.0.0.1:8742/good/repos/x/y/releases/latest >/dev/null 2>&1 && break; sleep 1
+          done
+          curl -fsS --max-time 2 http://127.0.0.1:8742/good/repos/x/y/releases/latest >/dev/null \
+            || { echo "::error::fake GitHub server never came up"; kill "$SRV" 2>/dev/null || true; exit 1; }
+          N=0
+          run_case() {  # run_case <mode> <api-url> <expect-regex> <label>
+            N=$((N + 1)); out="$T/case$N.out"
+            export HOME="$T/home$N" XDG_CONFIG_HOME="$T/home$N/.config"; mkdir -p "$HOME"
             set +e
-            PATH="$SHIM" AICLI_CN=1 AICLI_CN_BENCH=0 AICLI_GH_PROXY="http://127.0.0.1:$2/" AICLI_GH_API="$3" \
-              "$SHIM/bash" ./ai-cli-setup.sh opencode -y -l en --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > "$T/$1-$2.out" 2>&1
+            PATH="$SHIM" AICLI_CN=1 AICLI_CN_BENCH=0 AICLI_GH_PROXY="http://127.0.0.1:8742/$1/" AICLI_GH_API="$2" \
+              "$SHIM/bash" ./ai-cli-setup.sh opencode -y -l en --base-url https://gw.example.com/v1 --api-key sk-x --models m1 > "$out" 2>&1
             set -e
-            kill "$srv" 2>/dev/null || true; wait "$srv" 2>/dev/null || true
-            grep -Eq "$4" "$T/$1-$2.out" || { echo "::error::$5"; cat "$T/$1-$2.out"; exit 1; }
-            echo "$5 OK"
+            grep -Eq "$3" "$out" || { echo "::error::$4"; cat "$out"; kill "$SRV" 2>/dev/null || true; exit 1; }
+            echo "$4 OK"
           }
-          run_case bad  8742 http://127.0.0.1:8742 'sha256 mismatch'              'tampered proxy download rejected'
-          run_case good 8743 http://127.0.0.1:8743 'sha256 matches GitHub'        'intact proxy download verified'
-          run_case good 8744 http://127.0.0.1:1    "cannot fetch GitHub's sha256" 'unreachable API degrades to warning'
+          run_case bad  http://127.0.0.1:8742/bad  'sha256 mismatch'              'tampered proxy download rejected'
+          run_case good http://127.0.0.1:8742/good 'sha256 matches GitHub'        'intact proxy download verified'
+          run_case good http://127.0.0.1:1         "cannot fetch GitHub's sha256" 'unreachable API degrades to warning'
+          kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
       - name: Pipe mode (curl | bash style)
         run: |
