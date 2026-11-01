@@ -42,7 +42,7 @@ cd ai-cli-setup
 | 6 | **agent 清单（manifest）**：`ALL_AGENTS` / `agent_bin` / `agent_title` / `agent_needs_models` … |
 | 7 | 安装：`install_<agent>` + `post_install_check` |
 | 8 | 模型列表（`/v1/models`） |
-| 9 | JSON 工具（无 jq 依赖） |
+| 9 | 转义工具（shell 单引号 / TOML / JSON，无 jq 依赖） |
 | 10 | 配置写入：每个 agent 一个 `write_*` 函数 |
 | 11–12 | 交互（语言 → agent）、凭据收集 |
 | 13 | 子命令（`cmd_list` / `cmd_doctor` / `usage`） |
@@ -185,7 +185,13 @@ CI 有自动检查（`scripts/check-multibyte-vars.py`）。
 - 交互流程（`AICLI_ASSUME_TTY`）与菜单重试
 - 合并不丢键（`plugin` / 其它 provider 保留）
 - 管道模式（`cat ... | bash -s --`）
-- macOS 系统 bash 3.2 兼容性
+- 带值选项缺参 → 可读错误（不得出现 `unbound variable`）
+- `-y` 缺凭据必须在安装阶段之前报错
+- rc 文件跟随 `$SHELL`；导出的密钥 `source` 后逐字比对（故意带 `'` / `$&` / `\1`）
+- 测速探针必须位于不可变的版本目录；`--skip-install` / `--dry-run` 不测速
+- 经反代下载的 GitHub 二进制按 GitHub API 摘要校验（本地假服务，全程离线）
+- macOS 系统 bash 3.2 兼容性：语法检查之外，再用 `/bin/bash` 端到端跑一遍写配置、
+  交互掩码输入与密钥导出
 
 ---
 
@@ -255,7 +261,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 8. 版本号
 
-`VERSION` 在脚本顶部（当前 `2.1.1`）。改脚本行为就同步 bump，并在
+`VERSION` 在脚本顶部（当前 `2.3.0`）。改脚本行为就同步 bump，并在
 `CHANGELOG.md` 记录；脚本本身不联网检查更新。
 
 ---

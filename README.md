@@ -48,6 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/zxfccmm4/ai-cli-setup/main/ai-cli-s
   - **严格权限隔离**：所有生成的敏感配置文件权限均强制设为 `600`。
   - **零风险回退**：覆盖前自动创建带时间戳的备份副本；提供 `--dry-run` 预览落盘计划（零落盘、零副作用）。
   - **OpenCode V2 机制保护**：Key 支持通过 `{env:}` 环境变量引用导出，不直接硬编码在配置文件中。
+  - **反代下载校验**：经 GitHub 反代下载的二进制按 GitHub 官方公布的 sha256 校验，篡改即丢弃。
 - 🧩 **合并写入，不丢配置**：OpenCode / Claude Code / OMP 均按键级合并，已有插件、MCP、其它 Provider 与主题设置原样保留。
 - 🐧 **极致兼容**：全面适配 Linux (glibc)、macOS (arm64/x86_64) 及 OpenWrt / Alpine 等 musl 软路由架构；无 node 的精简系统有纯 Bash 兜底。
 
@@ -127,6 +128,10 @@ API key: sk-**************xyz        ← 实时掩码输入，保护密钥安全
 
 若检测到本地代理（Clash 等常见端口），直接全局走代理，优先级最高。
 
+**反代下载有校验**：经 GitHub 反代拿到的二进制（如 OpenCode release）会按 GitHub API 公布的
+sha256 校验，不符即丢弃并改走其它渠道；API 拿不到时只告警不阻断。`--skip-install` / `--dry-run`
+不会触发测速（反正不下载）。
+
 ### 第 0 步：脚本本身要先能下载下来
 
 上面三个源都发生在 **bash 开始执行之后**。而 `curl ... | bash` 里的 `curl` 更早一步，
@@ -140,7 +145,7 @@ curl -fsSL https://cdn.jsdelivr.net/gh/zxfccmm4/ai-cli-setup@main/ai-cli-setup.s
 | 写法 | 适用 | 说明 |
 | :--- | :--- | :--- |
 | `cdn.jsdelivr.net/gh/<repo>@main/...` | 中国大陆 | CDN 缓存，国内可达；`@main` 跟随最新 |
-| `cdn.jsdelivr.net/gh/<repo>@v2.2.0/...` | 需要可复现 | 锁定版本，CI 推荐 |
+| `cdn.jsdelivr.net/gh/<repo>@v2.3.0/...` | 需要可复现 | 锁定版本，CI 推荐 |
 | `raw.githubusercontent.com/<repo>/main/...` | 国际 / 可直连 | 官方源，无中间层 |
 
 > `bash -s -- --cn` 是把参数传给管道里的脚本；不加 `--cn` 时脚本也会自动判断国内网络，
@@ -158,7 +163,7 @@ curl -fsSL https://cdn.jsdelivr.net/gh/zxfccmm4/ai-cli-setup@main/ai-cli-setup.s
 
 ```text
 ℹ  speed test npm: official 1377645B/s, mirror 5363563B/s
-ℹ  speed test node: official 0B/s, mirror 4804354B/s
+ℹ  speed test node: official 19B/s, mirror 4804354B/s
 ℹ  speed test github: direct 1077687B/s, proxy 273372B/s
 ℹ  plan: npm=https://registry.npmmirror.com/ node=https://npmmirror.com/mirrors/node github=direct
 
@@ -190,6 +195,7 @@ GH_PROXY=direct
 | `AICLI_NPM_REGISTRY` | 镜像地址 | `https://registry.npmmirror.com/` |
 | `AICLI_NODE_MIRROR` | Node.js 镜像地址 | `https://npmmirror.com/mirrors/node` |
 | `AICLI_GH_PROXY` | GitHub 反代前缀 | `auto`（自动测速）/ 自填前缀 / `none` 强制直连 |
+| `AICLI_GH_VERIFY` | 经反代下载的 GitHub 二进制按官方 sha256 校验 | `1` / `0` 关闭 |
 
 **不会改动你的 `~/.npmrc`**：加速只通过本次进程的环境变量生效，脚本退出即失效。
 
@@ -277,6 +283,7 @@ GH_PROXY=direct
 | `--api-key KEY` | 网关 API 密钥（交互时掩码输入） |
 | `--models a,b,c` | 注册的模型 id 列表 |
 | `--model ID` | 默认模型 id |
+| `--grok-alias NAME` | Grok 本地模型别名（默认 `main`） |
 | `--skip-install` | 只写配置，不安装 |
 | `--dry-run` | 只打印计划，零落盘 |
 | `--fail-fast` | 首个失败即停 |
@@ -359,6 +366,7 @@ musl 系统若误安装了 glibc 预编译二进制，在动态链接器缺失�
 | `AICLI_NPM_REGISTRY` | npm 镜像地址 | `https://registry.npmmirror.com/` |
 | `AICLI_NODE_MIRROR` | Node.js 镜像地址 | `https://npmmirror.com/mirrors/node` |
 | `AICLI_GH_PROXY` | GitHub 反代前缀 | `auto` / 自填 / `none` |
+| `AICLI_GH_VERIFY` | 反代下载的 GitHub 二进制按官方 sha256 校验 | `1` / `0` |
 | `GROK_ALIAS` | Grok CLI 默认模型别名 | `main` |
 | `GROK_CONTEXT_WINDOW`| Grok CLI 上下文窗口尺寸 | `500000` |
 | `CODEX_WIRE_API` | Codex CLI 协议类型 | `responses` / `chat` |

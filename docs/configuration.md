@@ -236,7 +236,9 @@ V2 下真实密钥写进 shell 配置（`export AICLI_<PROVIDER>_API_KEY='…'`�
 | `--dry-run` | 只打印计划，零落盘 |
 | `--fail-fast` | 第一个失败就停 |
 | `--assume-tty` | 把 stdin 当交互输入（容器 / CI） |
-| `list` / `doctor` / `help` | 子命令 |
+| `--cn` / `--no-cn` | 强制开启 / 关闭国内网络加速（默认按网络自动判断） |
+| `--proxy URL` | 给 curl 用的 HTTP 代理，如 `http://127.0.0.1:7890` |
+| `list` / `doctor` / `cn` / `help` | 子命令（`cn` 打印测速结果与加速方案） |
 
 位置参数：`pi`、`omo`、`omp`、`claude`、`codex`、`grok`、`opencode`、
 `all`，也可用逗号组合（`pi,opencode`）。
@@ -249,6 +251,10 @@ V2 下真实密钥写进 shell 配置（`export AICLI_<PROVIDER>_API_KEY='…'`�
 AICLI_BASE_URL   AICLI_API_KEY   AICLI_MODELS   AICLI_MODEL   AICLI_LANG
 AICLI_ASSUME_TTY AICLI_OPENCODE_V2
 GROK_ALIAS       GROK_CONTEXT_WINDOW            CODEX_WIRE_API
+
+# 国内网络加速（详见 README「国内网络加速」）
+AICLI_CN         AICLI_PROXY     AICLI_CN_BENCH AICLI_NPM_REGISTRY  AICLI_NODE_MIRROR
+AICLI_GH_PROXY   AICLI_GH_VERIFY（经反代下载的 GitHub 二进制按官方 sha256 校验，默认 1）
 ```
 
 优先级：**命令行 > 环境变量 > 交互输入 > 默认值**。
